@@ -36,8 +36,8 @@ type keyMap struct {
 
 var keys = keyMap{
 	Select: key.NewBinding(
-		key.WithKeys(" ", "tab"),
-		key.WithHelp("space/tab", "select"),
+		key.WithKeys("tab"),
+		key.WithHelp("tab", "select"),
 	),
 	Back: key.NewBinding(
 		key.WithKeys("esc"),
@@ -351,7 +351,7 @@ func (m Model) updateSongBrowser(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyDown:
 		m.songList, _ = m.songList.Update(msg)
 		return m, nil
-	case tea.KeySpace, tea.KeyTab:
+	case tea.KeyTab:
 		// Toggle selection on current item
 		if item, ok := m.songList.SelectedItem().(songItem); ok {
 			if m.selectedSongs[item.song.Path] {
@@ -367,8 +367,8 @@ func (m Model) updateSongBrowser(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.searchInput, _ = m.searchInput.Update(msg)
 		m.filterSongs()
 		return m, nil
-	case tea.KeyRunes:
-		// Handle typing in search
+	case tea.KeySpace, tea.KeyRunes:
+		// Handle typing in search (space is its own key type, not a rune)
 		m.searchInput, _ = m.searchInput.Update(msg)
 		m.filterSongs()
 		return m, nil
@@ -501,7 +501,7 @@ func (m Model) viewSongBrowser() string {
 
 	// Status
 	selectedCount := len(m.selectedSongs)
-	status := statusBarStyle.Render(fmt.Sprintf("%d selected | space: select | enter: confirm | esc: back/clear", selectedCount))
+	status := statusBarStyle.Render(fmt.Sprintf("%d selected | tab: select | enter: confirm | esc: back/clear", selectedCount))
 	b.WriteString(status)
 	b.WriteString("\n\n")
 
