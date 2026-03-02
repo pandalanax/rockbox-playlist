@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,7 +21,7 @@ func LoadPlaylists(playlistDir string) ([]Playlist, error) {
 
 	entries, err := os.ReadDir(playlistDir)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("could not read playlist folder %q: %w", playlistDir, err)
 	}
 
 	for _, entry := range entries {
@@ -54,7 +55,7 @@ func LoadPlaylistEntries(playlistPath string) ([]string, error) {
 		if os.IsNotExist(err) {
 			return entries, nil // Empty playlist
 		}
-		return nil, err
+		return nil, fmt.Errorf("could not open playlist %q: %w", filepath.Base(playlistPath), err)
 	}
 	defer f.Close()
 
@@ -75,13 +76,16 @@ func LoadPlaylistEntries(playlistPath string) ([]string, error) {
 func AppendToPlaylist(playlistPath string, entries []string) error {
 	f, err := os.OpenFile(playlistPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		return err
+		if os.IsPermission(err) {
+			return fmt.Errorf("no write permission for playlist %q — is the device read-only?", filepath.Base(playlistPath))
+		}
+		return fmt.Errorf("could not write to playlist %q: %w", filepath.Base(playlistPath), err)
 	}
 	defer f.Close()
 
 	for _, entry := range entries {
 		if _, err := f.WriteString(entry + "\n"); err != nil {
-			return err
+			return fmt.Errorf("failed writing to playlist (disk full?): %w", err)
 		}
 	}
 

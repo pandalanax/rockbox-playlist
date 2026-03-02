@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -174,5 +175,8 @@ func ScanMusicDirectory(musicDir string) ([]Song, error) {
 		return songs[i].ModTime.After(songs[j].ModTime)
 	})
 
-	return songs, err
+	if err != nil {
+		return songs, fmt.Errorf("problem scanning music library: %w", err)
+	}
+	return songs, nil
 }

@@ -67,7 +67,21 @@ var (
 	confirmTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205")).Padding(1, 0)
 	songListStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Padding(0, 2)
 	loadingStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205")).Padding(2, 4)
-	searchStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	searchStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	selectedPanelStyle = lipgloss.NewStyle().
+				BorderStyle(lipgloss.NormalBorder()).
+				BorderLeft(true).
+				BorderTop(false).
+				BorderBottom(false).
+				BorderRight(false).
+				BorderForeground(lipgloss.Color("241")).
+				PaddingLeft(1)
+	selectedTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("170"))
+	selectedDimStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Italic(true)
+	selectedSongStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	errorTitleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("196")).Padding(1, 2)
+	errorMsgStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Padding(0, 2)
+	errorHintStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Padding(1, 2)
 )
 
 // minimalDelegate is a lightweight item delegate for better performance
@@ -129,6 +143,7 @@ type Model struct {
 	playlistsLoaded  bool
 	selectedPlaylist *Playlist
 	selectedSongs    map[string]bool
+	selectedOrder    []string // Song paths in selection order
 	playlistList     list.Model
 	songList         list.Model
 	searchInput      textinput.Model
@@ -207,7 +222,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.playlistList.SetSize(msg.Width, msg.Height-4)
 		}
 		if m.songList.Items() != nil {
-			m.songList.SetSize(msg.Width, msg.Height-8)
+			songListWidth := msg.Width - msg.Width*35/100 - 1
+			m.songList.SetSize(songListWidth, msg.Height-8)
 		}
 		return m, nil
 
@@ -317,7 +333,8 @@ func (m *Model) setupSongList() {
 	}
 
 	// Use minimal delegate for performance with large lists
-	m.songList = list.New(items, minimalDelegate{}, m.width, m.height-8)
+	songListWidth := m.width - m.width*35/100 - 1
+	m.songList = list.New(items, minimalDelegate{}, songListWidth, m.height-8)
 	m.songList.Title = ""
 	m.songList.SetShowStatusBar(false)
 	m.songList.SetFilteringEnabled(false) // We handle filtering ourselves
@@ -339,6 +356,7 @@ func (m Model) updateSongBrowser(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Go back to playlist picker
 		m.screen = screenPlaylistPicker
 		m.selectedSongs = make(map[string]bool)
+		m.selectedOrder = nil
 		return m, nil
 	case tea.KeyEnter:
 		if len(m.selectedSongs) > 0 {
@@ -356,8 +374,16 @@ func (m Model) updateSongBrowser(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if item, ok := m.songList.SelectedItem().(songItem); ok {
 			if m.selectedSongs[item.song.Path] {
 				delete(m.selectedSongs, item.song.Path)
+				// Remove from selectedOrder
+				for i, p := range m.selectedOrder {
+					if p == item.song.Path {
+						m.selectedOrder = append(m.selectedOrder[:i], m.selectedOrder[i+1:]...)
+						break
+					}
+				}
 			} else {
 				m.selectedSongs[item.song.Path] = true
+				m.selectedOrder = append(m.selectedOrder, item.song.Path)
 			}
 			m.refreshSongList()
 		}
@@ -441,7 +467,13 @@ func (m Model) updateConfirmation(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) View() string {
 	if m.err != nil {
-		return fmt.Sprintf("Error: %v\n\nPress any key to exit.", m.err)
+		var b strings.Builder
+		b.WriteString(errorTitleStyle.Render("Something went wrong"))
+		b.WriteString("\n")
+		b.WriteString(errorMsgStyle.Render(m.err.Error()))
+		b.WriteString("\n")
+		b.WriteString(errorHintStyle.Render("Press any key to exit."))
+		return b.String()
 	}
 
 	switch m.screen {
@@ -484,31 +516,77 @@ func (m Model) viewPlaylistPicker() string {
 }
 
 func (m Model) viewSongBrowser() string {
-	var b strings.Builder
+	// Calculate panel widths
+	rightWidth := m.width * 35 / 100
+	if rightWidth < 20 {
+		rightWidth = 20
+	}
+	leftWidth := m.width - rightWidth - 1 // -1 for border
+
+	// === Left panel: song picker ===
+	var left strings.Builder
 
 	// Header with playlist name
 	header := headerStyle.Render(fmt.Sprintf("Adding to: %s", m.selectedPlaylist.Name))
-	b.WriteString(header)
-	b.WriteString("\n")
+	left.WriteString(header)
+	left.WriteString("\n")
 
 	// Search box
 	searchBox := searchStyle.Render("Search: ") + m.searchInput.Value()
 	if m.searchInput.Value() == "" {
 		searchBox = searchStyle.Render("Search: (type to filter)")
 	}
-	b.WriteString(searchBox)
-	b.WriteString("\n")
+	left.WriteString(searchBox)
+	left.WriteString("\n")
 
 	// Status
 	selectedCount := len(m.selectedSongs)
 	status := statusBarStyle.Render(fmt.Sprintf("%d selected | tab: select | enter: confirm | esc: back/clear", selectedCount))
-	b.WriteString(status)
-	b.WriteString("\n\n")
+	left.WriteString(status)
+	left.WriteString("\n\n")
 
 	// Song list
-	b.WriteString(m.songList.View())
+	left.WriteString(m.songList.View())
 
-	return b.String()
+	leftPanel := lipgloss.NewStyle().Width(leftWidth).Render(left.String())
+
+	// === Right panel: selected songs ===
+	var right strings.Builder
+
+	right.WriteString(selectedTitleStyle.Render(fmt.Sprintf("Selected (%d)", selectedCount)))
+	right.WriteString("\n\n")
+
+	if len(m.selectedOrder) == 0 {
+		right.WriteString(selectedDimStyle.Render("No songs selected"))
+	} else {
+		// Build a path -> song lookup from the full songs list
+		songMap := make(map[string]Song, len(m.songs))
+		for _, s := range m.songs {
+			songMap[s.Path] = s
+		}
+
+		// Show selected songs in selection order, capped to visible height
+		maxVisible := m.height - 5
+		if maxVisible < 1 {
+			maxVisible = 1
+		}
+		for i, path := range m.selectedOrder {
+			if i >= maxVisible {
+				remaining := len(m.selectedOrder) - maxVisible
+				right.WriteString(selectedDimStyle.Render(fmt.Sprintf("... and %d more", remaining)))
+				break
+			}
+			if song, ok := songMap[path]; ok {
+				right.WriteString(selectedSongStyle.Render("• " + song.ConfirmDisplayName()))
+			}
+			right.WriteString("\n")
+		}
+	}
+
+	rightPanel := selectedPanelStyle.Width(rightWidth).Height(m.height - 1).Render(right.String())
+
+	// Join panels horizontally
+	return lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, rightPanel)
 }
 
 func (m Model) viewConfirmation() string {
@@ -543,11 +621,15 @@ func main() {
 
 	// Validate directories exist
 	if _, err := os.Stat(playlistDir); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "Playlist directory not found: %s\n", playlistDir)
+		fmt.Fprintf(os.Stderr, "Playlist folder not found: %s\n", playlistDir)
+		fmt.Fprintf(os.Stderr, "Is your Rockbox player connected?\n")
+		fmt.Fprintf(os.Stderr, "\nUsage: rockbox-playlist [playlist-dir] [music-dir]\n")
 		os.Exit(1)
 	}
 	if _, err := os.Stat(musicDir); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "Music directory not found: %s\n", musicDir)
+		fmt.Fprintf(os.Stderr, "Music folder not found: %s\n", musicDir)
+		fmt.Fprintf(os.Stderr, "Is your Rockbox player connected?\n")
+		fmt.Fprintf(os.Stderr, "\nUsage: rockbox-playlist [playlist-dir] [music-dir]\n")
 		os.Exit(1)
 	}
 
@@ -558,7 +640,8 @@ func main() {
 	p := tea.NewProgram(initialModel(playlistDir, musicDir), tea.WithAltScreen())
 	finalModel, err := p.Run()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to start: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Make sure your terminal supports interactive TUI applications.\n")
 		os.Exit(1)
 	}
 
