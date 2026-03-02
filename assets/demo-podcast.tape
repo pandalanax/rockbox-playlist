@@ -15,8 +15,8 @@ Type "./rockbox-playlist /tmp/rockbox-demo/Playlists /tmp/rockbox-demo/Music"
 Enter
 Sleep 2s
 
-# Select podcasts playlist
-Type "podcast"
+# Select podcasts playlist (navigate with arrows instead of filtering)
+Down
 Sleep 500ms
 Enter
 Sleep 1s
