@@ -23,6 +23,12 @@ const (
 	screenSongBrowser
 	screenConfirmation
 	screenDone
+	// Podcast screens
+	screenPodcastMenu
+	screenPodcastUpdate
+	screenPodcastSearch
+	screenPodcastResults
+	screenPodcastAdding
 )
 
 // Custom key bindings
@@ -59,14 +65,14 @@ var keys = keyMap{
 
 // Styles
 var (
-	titleStyle        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
-	headerStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).Padding(0, 1)
-	selectedItemStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("170")).Bold(true)
-	normalItemStyle   = lipgloss.NewStyle()
-	statusBarStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	confirmTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205")).Padding(1, 0)
-	songListStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Padding(0, 2)
-	loadingStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205")).Padding(2, 4)
+	titleStyle         = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
+	headerStyle        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).Padding(0, 1)
+	selectedItemStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("170")).Bold(true)
+	normalItemStyle    = lipgloss.NewStyle()
+	statusBarStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	confirmTitleStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205")).Padding(1, 0)
+	songListStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Padding(0, 2)
+	loadingStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205")).Padding(2, 4)
 	searchStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	selectedPanelStyle = lipgloss.NewStyle().
 				BorderStyle(lipgloss.NormalBorder()).
@@ -82,6 +88,14 @@ var (
 	errorTitleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("196")).Padding(1, 2)
 	errorMsgStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Padding(0, 2)
 	errorHintStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Padding(1, 2)
+	// Podcast styles
+	podcastMenuStyle     = lipgloss.NewStyle().Padding(2, 4)
+	podcastTitleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205")).MarginBottom(1)
+	podcastItemStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	podcastSelectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("170")).Bold(true)
+	podcastProgressStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Padding(0, 4)
+	podcastResultStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("252")).PaddingLeft(2)
+	podcastArtistStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 )
 
 // minimalDelegate is a lightweight item delegate for better performance
@@ -153,6 +167,18 @@ type Model struct {
 	height           int
 	err              error
 	message          string
+
+	// Podcast fields
+	podcastConfig      PodcastConfig
+	podcastAudioDir    string // e.g. /Volumes/NO NAME/Audiobooks
+	podcastConfigPath  string // e.g. /Volumes/NO NAME/Audiobooks/podcasts.json
+	podcastMenuIndex   int    // Selected menu item (0-3)
+	podcastSearchInput textinput.Model
+	podcastResults     []iTunesPodcast
+	podcastResultIndex int
+	podcastProgress    string   // Current progress message
+	podcastLog         []string // Log of progress messages
+	podcastUpdating    bool     // Whether update is in progress
 }
 
 // Messages
@@ -168,21 +194,52 @@ type errMsg struct {
 	err error
 }
 
+// Podcast messages
+type podcastUpdateProgressMsg struct{ message string }
+type podcastUpdateDoneMsg struct {
+	err     error
+	summary string
+}
+type podcastSearchResultsMsg struct {
+	results []iTunesPodcast
+	err     error
+}
+type podcastAddProgressMsg struct{ message string }
+type podcastAddDoneMsg struct {
+	err     error
+	summary string
+}
+
 func initialModel(playlistDir, musicDir string) Model {
 	ti := textinput.New()
 	ti.Placeholder = "Type to search..."
 	ti.CharLimit = 100
 	ti.Width = 50
 
+	// Podcast search input
+	podcastTi := textinput.New()
+	podcastTi.Placeholder = "Search podcasts..."
+	podcastTi.CharLimit = 100
+	podcastTi.Width = 40
+
+	// Determine podcast audio dir (sibling to Playlists dir)
+	baseDir := filepath.Dir(playlistDir)
+	podcastAudioDir := filepath.Join(baseDir, "Audiobooks")
+	podcastConfigPath := filepath.Join(podcastAudioDir, "podcasts.json")
+
 	return Model{
-		screen:          screenLoading,
-		playlistDir:     playlistDir,
-		musicDir:        musicDir,
-		selectedSongs:   make(map[string]bool),
-		existingEntries: make(map[string]bool),
-		searchInput:     ti,
-		width:           80,
-		height:          24,
+		screen:             screenLoading,
+		playlistDir:        playlistDir,
+		musicDir:           musicDir,
+		selectedSongs:      make(map[string]bool),
+		existingEntries:    make(map[string]bool),
+		searchInput:        ti,
+		width:              80,
+		height:             24,
+		podcastSearchInput: podcastTi,
+		podcastAudioDir:    podcastAudioDir,
+		podcastConfigPath:  podcastConfigPath,
+		podcastConfig:      make(PodcastConfig),
 	}
 }
 
@@ -248,6 +305,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case podcastUpdateDoneMsg:
+		m.podcastUpdating = false
+		if msg.err != nil {
+			m.podcastProgress = fmt.Sprintf("Error: %v\n\n%s", msg.err, msg.summary)
+		} else {
+			m.podcastProgress = msg.summary
+		}
+		// Stay on update screen to show results, user presses key to continue
+		return m, nil
+
+	case podcastSearchResultsMsg:
+		if msg.err != nil {
+			m.podcastProgress = fmt.Sprintf("Error: %v", msg.err)
+			return m, nil
+		}
+		m.podcastResults = msg.results
+		m.podcastResultIndex = 0
+		m.screen = screenPodcastResults
+		return m, nil
+
+	case podcastAddDoneMsg:
+		m.podcastUpdating = false
+		if msg.err != nil {
+			m.podcastProgress = fmt.Sprintf("Error: %v\n\n%s", msg.err, msg.summary)
+		} else {
+			m.podcastProgress = msg.summary
+			// Reload config
+			config, err := LoadPodcastConfig(m.podcastConfigPath)
+			if err == nil {
+				m.podcastConfig = config
+			}
+		}
+		// Stay on adding screen to show results
+		return m, nil
+
 	case tea.KeyMsg:
 		// Global quit
 		if msg.Type == tea.KeyCtrlC {
@@ -263,6 +355,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateSongBrowser(msg)
 		case screenConfirmation:
 			return m.updateConfirmation(msg)
+		case screenPodcastMenu:
+			return m.updatePodcastMenu(msg)
+		case screenPodcastUpdate:
+			return m.updatePodcastUpdate(msg)
+		case screenPodcastSearch:
+			return m.updatePodcastSearch(msg)
+		case screenPodcastResults:
+			return m.updatePodcastResults(msg)
+		case screenPodcastAdding:
+			return m.updatePodcastAdding(msg)
 		case screenDone:
 			return m, tea.Quit
 		}
@@ -300,6 +402,21 @@ func (m Model) updatePlaylistPicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case msg.Type == tea.KeyEnter:
 		if item, ok := m.playlistList.SelectedItem().(playlistItem); ok {
 			m.selectedPlaylist = &item.playlist
+
+			// Check if this is a podcast playlist
+			if IsPodcastPlaylist(item.playlist.Name) {
+				// Load podcast config
+				config, err := LoadPodcastConfig(m.podcastConfigPath)
+				if err != nil {
+					m.err = err
+					return m, tea.Quit
+				}
+				m.podcastConfig = config
+				m.podcastMenuIndex = 0
+				m.screen = screenPodcastMenu
+				return m, nil
+			}
+
 			// Load existing entries to filter duplicates
 			entries, _ := LoadPlaylistEntries(item.playlist.Path)
 			m.existingEntries = make(map[string]bool)
@@ -405,7 +522,7 @@ func (m Model) updateSongBrowser(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) filterSongs() {
 	query := strings.ToLower(m.searchInput.Value())
-	
+
 	// Pre-allocate with estimated capacity
 	items := make([]list.Item, 0, len(m.songs)/2)
 
@@ -465,6 +582,247 @@ func (m Model) updateConfirmation(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// Podcast menu items
+var podcastMenuItems = []string{
+	"Update all podcasts",
+	"Add new podcast",
+	"Browse & add songs",
+	"Back",
+}
+
+func (m Model) updatePodcastMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyCtrlC:
+		return m, tea.Quit
+	case tea.KeyUp:
+		if m.podcastMenuIndex > 0 {
+			m.podcastMenuIndex--
+		}
+		return m, nil
+	case tea.KeyDown:
+		if m.podcastMenuIndex < len(podcastMenuItems)-1 {
+			m.podcastMenuIndex++
+		}
+		return m, nil
+	case tea.KeyEnter:
+		switch m.podcastMenuIndex {
+		case 0: // Update all podcasts
+			m.screen = screenPodcastUpdate
+			m.podcastProgress = ""
+			m.podcastUpdating = true
+			return m, m.startPodcastUpdate()
+		case 1: // Add new podcast
+			m.screen = screenPodcastSearch
+			m.podcastSearchInput.SetValue("")
+			m.podcastSearchInput.Focus()
+			m.podcastResults = nil
+			return m, nil
+		case 2: // Browse & add songs
+			// Load existing entries to filter duplicates
+			entries, _ := LoadPlaylistEntries(m.selectedPlaylist.Path)
+			m.existingEntries = make(map[string]bool)
+			for _, e := range entries {
+				normalized := NormalizePath(e)
+				m.existingEntries[normalized] = true
+			}
+			m.setupSongList()
+			m.searchInput.SetValue("")
+			m.searchInput.Focus()
+			m.screen = screenSongBrowser
+			return m, nil
+		case 3: // Back
+			m.screen = screenPlaylistPicker
+			return m, nil
+		}
+	case tea.KeyEsc:
+		m.screen = screenPlaylistPicker
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m Model) startPodcastUpdate() tea.Cmd {
+	config := m.podcastConfig
+	audioDir := m.podcastAudioDir
+	configPath := m.podcastConfigPath
+	playlistPath := m.selectedPlaylist.Path
+
+	return func() tea.Msg {
+		var log []string
+		totalNew := 0
+		totalDeleted := 0
+
+		if len(config) == 0 {
+			return podcastUpdateDoneMsg{err: nil, summary: "No podcasts subscribed"}
+		}
+
+		for name := range config {
+			feed := config[name]
+			log = append(log, fmt.Sprintf("Checking %s...", name))
+
+			newCount, deletedCount, msgs, err := UpdatePodcastWithLog(name, &feed, audioDir)
+			log = append(log, msgs...)
+
+			if err != nil {
+				log = append(log, fmt.Sprintf("  Error: %v", err))
+				continue
+			}
+
+			config[name] = feed
+			totalNew += newCount
+			totalDeleted += deletedCount
+
+			if newCount == 0 {
+				log = append(log, "  No new episodes")
+			} else if newCount == 1 {
+				log = append(log, "  1 new episode downloaded")
+			} else {
+				log = append(log, fmt.Sprintf("  %d new episodes downloaded", newCount))
+			}
+		}
+
+		// Save config
+		if err := SavePodcastConfig(configPath, config); err != nil {
+			return podcastUpdateDoneMsg{err: err, summary: strings.Join(log, "\n")}
+		}
+
+		// Rebuild playlist
+		if err := RebuildPodcastPlaylist(config, playlistPath, audioDir); err != nil {
+			return podcastUpdateDoneMsg{err: err, summary: strings.Join(log, "\n")}
+		}
+
+		log = append(log, "")
+		log = append(log, "Done!")
+
+		summary := fmt.Sprintf("Downloaded %d new episodes", totalNew)
+		if totalDeleted > 0 {
+			summary += fmt.Sprintf(", deleted %d old", totalDeleted)
+		}
+
+		return podcastUpdateDoneMsg{err: nil, summary: strings.Join(log, "\n")}
+	}
+}
+
+func (m Model) updatePodcastUpdate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyCtrlC:
+		return m, tea.Quit
+	case tea.KeyEsc, tea.KeyEnter:
+		// Only allow exit if update is complete
+		if !m.podcastUpdating {
+			m.screen = screenPodcastMenu
+			m.podcastProgress = ""
+			// Reload config since it may have been updated
+			config, err := LoadPodcastConfig(m.podcastConfigPath)
+			if err == nil {
+				m.podcastConfig = config
+			}
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m Model) updatePodcastSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyCtrlC:
+		return m, tea.Quit
+	case tea.KeyEsc:
+		m.screen = screenPodcastMenu
+		return m, nil
+	case tea.KeyEnter:
+		query := m.podcastSearchInput.Value()
+		if query != "" {
+			m.podcastProgress = "Searching..."
+			return m, m.searchPodcasts(query)
+		}
+		return m, nil
+	default:
+		var cmd tea.Cmd
+		m.podcastSearchInput, cmd = m.podcastSearchInput.Update(msg)
+		return m, cmd
+	}
+}
+
+func (m Model) searchPodcasts(query string) tea.Cmd {
+	return func() tea.Msg {
+		results, err := SearchPodcasts(query)
+		return podcastSearchResultsMsg{results: results, err: err}
+	}
+}
+
+func (m Model) updatePodcastResults(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyCtrlC:
+		return m, tea.Quit
+	case tea.KeyEsc:
+		m.screen = screenPodcastSearch
+		return m, nil
+	case tea.KeyUp:
+		if m.podcastResultIndex > 0 {
+			m.podcastResultIndex--
+		}
+		return m, nil
+	case tea.KeyDown:
+		if m.podcastResultIndex < len(m.podcastResults)-1 {
+			m.podcastResultIndex++
+		}
+		return m, nil
+	case tea.KeyEnter:
+		if len(m.podcastResults) > 0 {
+			m.screen = screenPodcastAdding
+			m.podcastProgress = ""
+			m.podcastUpdating = true
+			return m, m.addSelectedPodcast()
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m Model) addSelectedPodcast() tea.Cmd {
+	podcast := m.podcastResults[m.podcastResultIndex]
+	config := m.podcastConfig
+	audioDir := m.podcastAudioDir
+	configPath := m.podcastConfigPath
+	playlistPath := m.selectedPlaylist.Path
+
+	return func() tea.Msg {
+		log, err := AddPodcastWithLog(podcast, audioDir, config)
+
+		if err != nil {
+			return podcastAddDoneMsg{err: err, summary: strings.Join(log, "\n")}
+		}
+
+		// Save config
+		if err := SavePodcastConfig(configPath, config); err != nil {
+			return podcastAddDoneMsg{err: err, summary: strings.Join(log, "\n")}
+		}
+
+		// Rebuild playlist
+		if err := RebuildPodcastPlaylist(config, playlistPath, audioDir); err != nil {
+			return podcastAddDoneMsg{err: err, summary: strings.Join(log, "\n")}
+		}
+
+		return podcastAddDoneMsg{err: nil, summary: strings.Join(log, "\n")}
+	}
+}
+
+func (m Model) updatePodcastAdding(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyCtrlC:
+		return m, tea.Quit
+	case tea.KeyEsc, tea.KeyEnter:
+		// Only allow exit if add is complete
+		if !m.podcastUpdating {
+			m.screen = screenPodcastMenu
+			m.podcastProgress = ""
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
 func (m Model) View() string {
 	if m.err != nil {
 		var b strings.Builder
@@ -485,6 +843,16 @@ func (m Model) View() string {
 		return m.viewSongBrowser()
 	case screenConfirmation:
 		return m.viewConfirmation()
+	case screenPodcastMenu:
+		return m.viewPodcastMenu()
+	case screenPodcastUpdate:
+		return m.viewPodcastUpdate()
+	case screenPodcastSearch:
+		return m.viewPodcastSearch()
+	case screenPodcastResults:
+		return m.viewPodcastResults()
+	case screenPodcastAdding:
+		return m.viewPodcastAdding()
 	case screenDone:
 		return m.message + "\n"
 	}
@@ -605,6 +973,112 @@ func (m Model) viewConfirmation() string {
 
 	b.WriteString("\n")
 	b.WriteString(statusBarStyle.Render("Press y to confirm, n to cancel"))
+
+	return b.String()
+}
+
+func (m Model) viewPodcastMenu() string {
+	var b strings.Builder
+
+	b.WriteString(podcastMenuStyle.Render(podcastTitleStyle.Render("Podcast Management")))
+	b.WriteString("\n\n")
+
+	for i, item := range podcastMenuItems {
+		if i == m.podcastMenuIndex {
+			b.WriteString(podcastMenuStyle.Render(podcastSelectedStyle.Render("> " + item)))
+		} else {
+			b.WriteString(podcastMenuStyle.Render(podcastItemStyle.Render("  " + item)))
+		}
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString(podcastMenuStyle.Render(statusBarStyle.Render(fmt.Sprintf("%d podcasts subscribed | esc: back", len(m.podcastConfig)))))
+
+	return b.String()
+}
+
+func (m Model) viewPodcastUpdate() string {
+	var b strings.Builder
+
+	b.WriteString(podcastMenuStyle.Render(podcastTitleStyle.Render("Updating Podcasts")))
+	b.WriteString("\n\n")
+
+	if m.podcastUpdating {
+		b.WriteString(podcastProgressStyle.Render("Updating podcasts, please wait..."))
+		b.WriteString("\n\n")
+		b.WriteString(podcastMenuStyle.Render(statusBarStyle.Render("This may take a while...")))
+	} else {
+		// Show the log output
+		b.WriteString(podcastProgressStyle.Render(m.podcastProgress))
+		b.WriteString("\n\n")
+		b.WriteString(podcastMenuStyle.Render(statusBarStyle.Render("Press enter or esc to continue")))
+	}
+
+	return b.String()
+}
+
+func (m Model) viewPodcastSearch() string {
+	var b strings.Builder
+
+	b.WriteString(podcastMenuStyle.Render(podcastTitleStyle.Render("Search Podcasts")))
+	b.WriteString("\n\n")
+	b.WriteString(podcastMenuStyle.Render("Search: " + m.podcastSearchInput.View()))
+	b.WriteString("\n\n")
+	b.WriteString(podcastMenuStyle.Render(statusBarStyle.Render("enter: search | esc: back")))
+
+	return b.String()
+}
+
+func (m Model) viewPodcastResults() string {
+	var b strings.Builder
+
+	b.WriteString(podcastMenuStyle.Render(podcastTitleStyle.Render("Search Results")))
+	b.WriteString("\n\n")
+
+	if len(m.podcastResults) == 0 {
+		b.WriteString(podcastMenuStyle.Render(podcastItemStyle.Render("No podcasts found")))
+	} else {
+		for i, podcast := range m.podcastResults {
+			var line string
+			if i == m.podcastResultIndex {
+				line = podcastSelectedStyle.Render("> " + podcast.CollectionName)
+			} else {
+				line = podcastResultStyle.Render("  " + podcast.CollectionName)
+			}
+			b.WriteString(podcastMenuStyle.Render(line))
+			b.WriteString("\n")
+			b.WriteString(podcastMenuStyle.Render(podcastArtistStyle.Render("    by " + podcast.ArtistName)))
+			b.WriteString("\n")
+		}
+	}
+
+	b.WriteString("\n")
+	b.WriteString(podcastMenuStyle.Render(statusBarStyle.Render("enter: add podcast | esc: back")))
+
+	return b.String()
+}
+
+func (m Model) viewPodcastAdding() string {
+	var b strings.Builder
+
+	b.WriteString(podcastMenuStyle.Render(podcastTitleStyle.Render("Adding Podcast")))
+	b.WriteString("\n\n")
+
+	if m.podcastUpdating {
+		if m.podcastResultIndex < len(m.podcastResults) {
+			b.WriteString(podcastMenuStyle.Render(podcastItemStyle.Render(m.podcastResults[m.podcastResultIndex].CollectionName)))
+			b.WriteString("\n\n")
+		}
+		b.WriteString(podcastProgressStyle.Render("Downloading episodes, please wait..."))
+		b.WriteString("\n\n")
+		b.WriteString(podcastMenuStyle.Render(statusBarStyle.Render("This may take a while...")))
+	} else {
+		// Show the log output
+		b.WriteString(podcastProgressStyle.Render(m.podcastProgress))
+		b.WriteString("\n\n")
+		b.WriteString(podcastMenuStyle.Render(statusBarStyle.Render("Press enter or esc to continue")))
+	}
 
 	return b.String()
 }
