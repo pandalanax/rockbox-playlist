@@ -2,6 +2,18 @@
 
 A terminal app for managing playlists on a Rockbox player. Select a playlist, search and pick songs, and append them to m3u8 playlist files.
 
+## Demo
+
+### Playlist Management
+
+![Playlist demo](assets/demo.gif)
+
+### Podcast Management
+
+Select a playlist named "podcasts" to access podcast features: update subscriptions, search and add new podcasts via iTunes, or browse audio files manually.
+
+![Podcast demo](assets/demo-podcast.gif)
+
 ## Build
 
 Requires Go. With Nix:
@@ -37,6 +49,17 @@ go build -o rockbox-playlist .
 | Esc     | Clear search / go back    |
 | y / n   | Confirm / cancel adding   |
 | q       | Quit                      |
+
+### Podcast Feature
+
+When you select a playlist named "podcasts", a special podcast management menu appears:
+
+1. **Update all podcasts** - Fetch new episodes for all subscribed podcasts (keeps latest 3, deletes old)
+2. **Add new podcast** - Search iTunes and subscribe to a new podcast
+3. **Browse & add songs** - Manually add audio files to the playlist
+4. **Back** - Return to playlist picker
+
+Podcast episodes are stored in `Audiobooks/<podcast-name>/` and configuration in `Audiobooks/podcasts.json`.
 
 ## Acknowledgements
 
