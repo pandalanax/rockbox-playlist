@@ -89,12 +89,12 @@ var (
 	errorMsgStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Padding(0, 2)
 	errorHintStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Padding(1, 2)
 	// Podcast styles
-	podcastMenuStyle     = lipgloss.NewStyle().Padding(2, 4)
+	podcastWrapStyle     = lipgloss.NewStyle().Padding(1, 2)
 	podcastTitleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205")).MarginBottom(1)
 	podcastItemStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 	podcastSelectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("170")).Bold(true)
-	podcastProgressStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Padding(0, 4)
-	podcastResultStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("252")).PaddingLeft(2)
+	podcastProgressStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	podcastResultStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 	podcastArtistStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 )
 
@@ -388,6 +388,8 @@ func (m *Model) setupPlaylistList() {
 	}
 	delegate := list.NewDefaultDelegate()
 	delegate.ShowDescription = false
+	delegate.SetHeight(1)
+	delegate.SetSpacing(0)
 	m.playlistList = list.New(items, delegate, m.width, m.height-4)
 	m.playlistList.Title = "Select a Playlist"
 	m.playlistList.SetShowStatusBar(true)
@@ -980,107 +982,103 @@ func (m Model) viewConfirmation() string {
 func (m Model) viewPodcastMenu() string {
 	var b strings.Builder
 
-	b.WriteString(podcastMenuStyle.Render(podcastTitleStyle.Render("Podcast Management")))
-	b.WriteString("\n\n")
+	b.WriteString(podcastTitleStyle.Render("Podcast Management"))
+	b.WriteString("\n")
 
 	for i, item := range podcastMenuItems {
 		if i == m.podcastMenuIndex {
-			b.WriteString(podcastMenuStyle.Render(podcastSelectedStyle.Render("> " + item)))
+			b.WriteString(podcastSelectedStyle.Render("> " + item))
 		} else {
-			b.WriteString(podcastMenuStyle.Render(podcastItemStyle.Render("  " + item)))
+			b.WriteString(podcastItemStyle.Render("  " + item))
 		}
 		b.WriteString("\n")
 	}
 
 	b.WriteString("\n")
-	b.WriteString(podcastMenuStyle.Render(statusBarStyle.Render(fmt.Sprintf("%d podcasts subscribed | esc: back", len(m.podcastConfig)))))
+	b.WriteString(statusBarStyle.Render(fmt.Sprintf("%d podcasts subscribed | esc: back", len(m.podcastConfig))))
 
-	return b.String()
+	return podcastWrapStyle.Render(b.String())
 }
 
 func (m Model) viewPodcastUpdate() string {
 	var b strings.Builder
 
-	b.WriteString(podcastMenuStyle.Render(podcastTitleStyle.Render("Updating Podcasts")))
-	b.WriteString("\n\n")
+	b.WriteString(podcastTitleStyle.Render("Updating Podcasts"))
+	b.WriteString("\n")
 
 	if m.podcastUpdating {
 		b.WriteString(podcastProgressStyle.Render("Updating podcasts, please wait..."))
 		b.WriteString("\n\n")
-		b.WriteString(podcastMenuStyle.Render(statusBarStyle.Render("This may take a while...")))
+		b.WriteString(statusBarStyle.Render("This may take a while..."))
 	} else {
-		// Show the log output
 		b.WriteString(podcastProgressStyle.Render(m.podcastProgress))
 		b.WriteString("\n\n")
-		b.WriteString(podcastMenuStyle.Render(statusBarStyle.Render("Press enter or esc to continue")))
+		b.WriteString(statusBarStyle.Render("Press enter or esc to continue"))
 	}
 
-	return b.String()
+	return podcastWrapStyle.Render(b.String())
 }
 
 func (m Model) viewPodcastSearch() string {
 	var b strings.Builder
 
-	b.WriteString(podcastMenuStyle.Render(podcastTitleStyle.Render("Search Podcasts")))
+	b.WriteString(podcastTitleStyle.Render("Search Podcasts"))
+	b.WriteString("\n")
+	b.WriteString("Search: " + m.podcastSearchInput.View())
 	b.WriteString("\n\n")
-	b.WriteString(podcastMenuStyle.Render("Search: " + m.podcastSearchInput.View()))
-	b.WriteString("\n\n")
-	b.WriteString(podcastMenuStyle.Render(statusBarStyle.Render("enter: search | esc: back")))
+	b.WriteString(statusBarStyle.Render("enter: search | esc: back"))
 
-	return b.String()
+	return podcastWrapStyle.Render(b.String())
 }
 
 func (m Model) viewPodcastResults() string {
 	var b strings.Builder
 
-	b.WriteString(podcastMenuStyle.Render(podcastTitleStyle.Render("Search Results")))
-	b.WriteString("\n\n")
+	b.WriteString(podcastTitleStyle.Render("Search Results"))
+	b.WriteString("\n")
 
 	if len(m.podcastResults) == 0 {
-		b.WriteString(podcastMenuStyle.Render(podcastItemStyle.Render("No podcasts found")))
+		b.WriteString(podcastItemStyle.Render("No podcasts found"))
 	} else {
 		for i, podcast := range m.podcastResults {
-			var line string
 			if i == m.podcastResultIndex {
-				line = podcastSelectedStyle.Render("> " + podcast.CollectionName)
+				b.WriteString(podcastSelectedStyle.Render("> " + podcast.CollectionName))
 			} else {
-				line = podcastResultStyle.Render("  " + podcast.CollectionName)
+				b.WriteString(podcastResultStyle.Render("  " + podcast.CollectionName))
 			}
-			b.WriteString(podcastMenuStyle.Render(line))
 			b.WriteString("\n")
-			b.WriteString(podcastMenuStyle.Render(podcastArtistStyle.Render("    by " + podcast.ArtistName)))
+			b.WriteString(podcastArtistStyle.Render("    by " + podcast.ArtistName))
 			b.WriteString("\n")
 		}
 	}
 
 	b.WriteString("\n")
-	b.WriteString(podcastMenuStyle.Render(statusBarStyle.Render("enter: add podcast | esc: back")))
+	b.WriteString(statusBarStyle.Render("enter: add podcast | esc: back"))
 
-	return b.String()
+	return podcastWrapStyle.Render(b.String())
 }
 
 func (m Model) viewPodcastAdding() string {
 	var b strings.Builder
 
-	b.WriteString(podcastMenuStyle.Render(podcastTitleStyle.Render("Adding Podcast")))
-	b.WriteString("\n\n")
+	b.WriteString(podcastTitleStyle.Render("Adding Podcast"))
+	b.WriteString("\n")
 
 	if m.podcastUpdating {
 		if m.podcastResultIndex < len(m.podcastResults) {
-			b.WriteString(podcastMenuStyle.Render(podcastItemStyle.Render(m.podcastResults[m.podcastResultIndex].CollectionName)))
+			b.WriteString(podcastItemStyle.Render(m.podcastResults[m.podcastResultIndex].CollectionName))
 			b.WriteString("\n\n")
 		}
 		b.WriteString(podcastProgressStyle.Render("Downloading episodes, please wait..."))
 		b.WriteString("\n\n")
-		b.WriteString(podcastMenuStyle.Render(statusBarStyle.Render("This may take a while...")))
+		b.WriteString(statusBarStyle.Render("This may take a while..."))
 	} else {
-		// Show the log output
 		b.WriteString(podcastProgressStyle.Render(m.podcastProgress))
 		b.WriteString("\n\n")
-		b.WriteString(podcastMenuStyle.Render(statusBarStyle.Render("Press enter or esc to continue")))
+		b.WriteString(statusBarStyle.Render("Press enter or esc to continue"))
 	}
 
-	return b.String()
+	return podcastWrapStyle.Render(b.String())
 }
 
 func main() {

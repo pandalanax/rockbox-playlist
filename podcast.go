@@ -15,6 +15,16 @@ import (
 	"time"
 )
 
+// httpGet performs an HTTP GET with a proper User-Agent header to avoid 403 errors
+func httpGet(url string) (*http.Response, error) {
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "rockbox-playlist/1.0")
+	return http.DefaultClient.Do(req)
+}
+
 // PodcastConfig represents the podcasts.json file structure
 type PodcastConfig map[string]PodcastFeed
 
@@ -114,7 +124,7 @@ func SearchPodcasts(query string) ([]iTunesPodcast, error) {
 	escapedQuery := url.QueryEscape(query)
 	apiURL := fmt.Sprintf("https://itunes.apple.com/search?term=%s&media=podcast&limit=5", escapedQuery)
 
-	resp, err := http.Get(apiURL)
+	resp, err := httpGet(apiURL)
 	if err != nil {
 		return nil, fmt.Errorf("could not search podcasts: %w", err)
 	}
@@ -134,7 +144,7 @@ func SearchPodcasts(query string) ([]iTunesPodcast, error) {
 
 // FetchRSSFeed fetches and parses an RSS feed
 func FetchRSSFeed(feedURL string) (*RSSFeed, error) {
-	resp, err := http.Get(feedURL)
+	resp, err := httpGet(feedURL)
 	if err != nil {
 		return nil, fmt.Errorf("could not fetch RSS feed: %w", err)
 	}
@@ -240,7 +250,7 @@ func GetFileExtension(audioURL string) string {
 
 // DownloadEpisode downloads an episode to the specified path
 func DownloadEpisode(audioURL, destPath string, onProgress func(downloaded, total int64)) error {
-	resp, err := http.Get(audioURL)
+	resp, err := httpGet(audioURL)
 	if err != nil {
 		return fmt.Errorf("could not download episode: %w", err)
 	}
