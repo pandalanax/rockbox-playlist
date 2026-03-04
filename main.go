@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
@@ -88,6 +89,11 @@ var (
 	errorTitleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("196")).Padding(1, 2)
 	errorMsgStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Padding(0, 2)
 	errorHintStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Padding(1, 2)
+	toastStyle         = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("255")).
+				Background(lipgloss.Color("35")).
+				Padding(1, 3)
 	// Podcast styles
 	podcastWrapStyle     = lipgloss.NewStyle().Padding(1, 2)
 	podcastTitleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205")).MarginBottom(1)
@@ -194,6 +200,8 @@ type errMsg struct {
 	err error
 }
 
+type toastDismissMsg struct{}
+
 // Podcast messages
 type podcastUpdateProgressMsg struct{ message string }
 type podcastUpdateDoneMsg struct {
@@ -287,6 +295,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case errMsg:
 		m.err = msg.err
 		return m, tea.Quit
+
+	case toastDismissMsg:
+		m.message = ""
+		return m, nil
 
 	case playlistsLoadedMsg:
 		m.playlists = msg.playlists
@@ -404,6 +416,7 @@ func (m Model) updatePlaylistPicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case msg.Type == tea.KeyEnter:
 		if item, ok := m.playlistList.SelectedItem().(playlistItem); ok {
 			m.selectedPlaylist = &item.playlist
+			m.message = "" // Clear any previous success message
 
 			// Check if this is a podcast playlist
 			if IsPodcastPlaylist(item.playlist.Name) {
@@ -574,9 +587,15 @@ func (m Model) updateConfirmation(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.err = err
 			return m, tea.Quit
 		}
+		// Reset selection and go back to playlist picker with toast
 		m.message = fmt.Sprintf("Added %d songs to %s", len(entries), m.selectedPlaylist.Name)
-		m.screen = screenDone
-		return m, tea.Quit
+		m.selectedSongs = make(map[string]bool)
+		m.selectedOrder = nil
+		m.selectedPlaylist = nil
+		m.screen = screenPlaylistPicker
+		return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+			return toastDismissMsg{}
+		})
 	case key.Matches(msg, keys.No), key.Matches(msg, keys.Back):
 		m.screen = screenSongBrowser
 		return m, nil
@@ -882,7 +901,15 @@ func (m Model) viewLoading() string {
 }
 
 func (m Model) viewPlaylistPicker() string {
-	return m.playlistList.View()
+	base := m.playlistList.View()
+
+	if m.message != "" {
+		toast := toastStyle.Render(m.message)
+		overlay := lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, toast)
+		return overlay
+	}
+
+	return base
 }
 
 func (m Model) viewSongBrowser() string {

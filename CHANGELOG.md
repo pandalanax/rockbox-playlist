@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-03-04
+
+### Changed
+- After adding songs to a playlist, return to playlist picker instead of quitting
+- Show a centered toast popup confirming the addition (auto-dismisses after 2s)
+- Tighter spacing in playlist picker and podcast menu screens
+
+### Fixed
+- 403 errors when fetching podcast RSS feeds (added proper User-Agent header)
+
 ## [0.2.0] - 2026-03-02
 
 ### Added
