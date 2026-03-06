@@ -202,6 +202,11 @@ type errMsg struct {
 
 type toastDismissMsg struct{}
 
+type backupDoneMsg struct {
+	err     error
+	summary string
+}
+
 // Podcast messages
 type podcastUpdateProgressMsg struct{ message string }
 type podcastUpdateDoneMsg struct {
@@ -299,6 +304,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case toastDismissMsg:
 		m.message = ""
 		return m, nil
+
+	case backupDoneMsg:
+		if msg.err != nil {
+			m.message = fmt.Sprintf("Backup failed: %v", msg.err)
+		} else {
+			m.message = msg.summary
+		}
+		return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+			return toastDismissMsg{}
+		})
 
 	case playlistsLoadedMsg:
 		m.playlists = msg.playlists
@@ -407,12 +422,28 @@ func (m *Model) setupPlaylistList() {
 	m.playlistList.SetShowStatusBar(true)
 	m.playlistList.SetFilteringEnabled(true)
 	m.playlistList.Styles.Title = titleStyle
+	m.playlistList.AdditionalShortHelpKeys = func() []key.Binding {
+		return []key.Binding{
+			key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "backup")),
+		}
+	}
+}
+
+func (m Model) startBackup() tea.Cmd {
+	playlistDir := m.playlistDir
+	podcastConfigPath := m.podcastConfigPath
+	return func() tea.Msg {
+		summary, err := BackupPlaylists(playlistDir, podcastConfigPath)
+		return backupDoneMsg{err: err, summary: summary}
+	}
 }
 
 func (m Model) updatePlaylistPicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, keys.Quit):
 		return m, tea.Quit
+	case msg.String() == "b" && m.playlistList.FilterState() == list.Unfiltered:
+		return m, m.startBackup()
 	case msg.Type == tea.KeyEnter:
 		if item, ok := m.playlistList.SelectedItem().(playlistItem); ok {
 			m.selectedPlaylist = &item.playlist
