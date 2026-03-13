@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-03-13
+
+### Added
+- SSH server mode: run with `--serve` to expose the TUI over SSH (Wish)
+  - Single-session access: only one SSH connection at a time
+  - Configurable via flags: `--host`, `--port`, `--host-key-dir`, `--device-path`
+  - Environment variable fallbacks: `ROCKBOX_SSH_PORT`, `ROCKBOX_DEVICE_PATH`
+  - Auto-generates SSH host keys on first run
+- Live music scanning: the music library is re-scanned every 5 seconds in the background
+  - New songs added to the device appear automatically without restarting
+  - Song browser refreshes in-place when new music is detected
+
+### Changed
+- CLI now uses `flag` package: positional args after flags (`rockbox-playlist [flags] [playlist-dir] [music-dir]`)
+
 ## [0.3.0] - 2026-03-06
 
 ### Added

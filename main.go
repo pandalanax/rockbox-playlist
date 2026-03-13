@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -96,8 +97,8 @@ var (
 				Background(lipgloss.Color("35")).
 				Padding(1, 3)
 	// Device styles
-	waitingStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205")).Padding(2, 4)
-	waitingHintStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Padding(0, 4)
+	waitingStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205")).Padding(2, 4)
+	waitingHintStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Padding(0, 4)
 	ejectConfirmStyle = lipgloss.NewStyle().
 				Bold(true).
 				Foreground(lipgloss.Color("255")).
@@ -216,6 +217,8 @@ type errMsg struct {
 
 type toastDismissMsg struct{}
 
+type musicRescanMsg struct{}
+
 type backupDoneMsg struct {
 	err     error
 	summary string
@@ -279,6 +282,30 @@ func initialModel(devicePath, playlistDir, musicDir string) Model {
 	}
 }
 
+// initialModelServe creates a Model for SSH serve mode.
+// Starts on the no-device screen if device is not connected, otherwise loads immediately.
+func initialModelServe(devicePath string, width, height int) Model {
+	playlistDir := ""
+	musicDir := ""
+	if devicePath != "" && CheckDevice(devicePath) {
+		playlistDir = filepath.Join(devicePath, "Playlists")
+		musicDir = filepath.Join(devicePath, "Music")
+	} else if devicePath == "" {
+		// Auto-detect
+		found := FindDevicePath()
+		if found != "" {
+			devicePath = found
+			playlistDir = filepath.Join(found, "Playlists")
+			musicDir = filepath.Join(found, "Music")
+		}
+	}
+
+	m := initialModel(devicePath, playlistDir, musicDir)
+	m.width = width
+	m.height = height
+	return m
+}
+
 func (m Model) Init() tea.Cmd {
 	if m.screen == screenNoDevice {
 		return WatchForDevice(m.devicePath)
@@ -307,6 +334,12 @@ func loadSongs(dir string) tea.Cmd {
 		}
 		return songsLoadedMsg{songs}
 	}
+}
+
+func scheduleMusicRescan() tea.Cmd {
+	return tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
+		return musicRescanMsg{}
+	})
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -352,9 +385,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case songsLoadedMsg:
 		m.songs = msg.songs
+		wasLoaded := m.songsLoaded
 		m.songsLoaded = true
-		if m.songsLoaded && m.playlistsLoaded {
+		if m.songsLoaded && m.playlistsLoaded && !wasLoaded {
+			// Initial load complete — show playlist picker
 			m.screen = screenPlaylistPicker
+		}
+		if wasLoaded && m.screen == screenSongBrowser {
+			// Re-scan while browsing — refresh the song list
+			m.filterSongs()
+		}
+		// Schedule the next background re-scan
+		return m, scheduleMusicRescan()
+
+	case musicRescanMsg:
+		// Only re-scan if device is connected
+		if m.deviceConnected && m.musicDir != "" {
+			return m, loadSongs(m.musicDir)
 		}
 		return m, nil
 
@@ -1242,12 +1289,45 @@ func (m Model) viewPodcastAdding() string {
 }
 
 func main() {
+	// Flags
+	serve := flag.Bool("serve", false, "Run as SSH server")
+	host := flag.String("host", "0.0.0.0", "SSH server listen address")
+	port := flag.String("port", "2222", "SSH server listen port")
+	hostKeyDir := flag.String("host-key-dir", ".ssh", "Directory for SSH host keys")
+	deviceFlag := flag.String("device-path", "", "Path to Rockbox device (auto-detect if empty)")
+
+	flag.Parse()
+
+	// Check env vars as fallbacks
+	if *port == "2222" {
+		if envPort := os.Getenv("ROCKBOX_SSH_PORT"); envPort != "" {
+			*port = envPort
+		}
+	}
+	if *deviceFlag == "" {
+		if envPath := os.Getenv("ROCKBOX_DEVICE_PATH"); envPath != "" {
+			*deviceFlag = envPath
+		}
+	}
+
+	if *serve {
+		StartServer(ServerConfig{
+			Host:       *host,
+			Port:       *port,
+			HostKeyDir: *hostKeyDir,
+			DevicePath: *deviceFlag,
+		})
+		return
+	}
+
+	// --- Local mode ---
 	var devicePath, playlistDir, musicDir string
 
-	if len(os.Args) >= 3 {
-		// Explicit paths provided
-		playlistDir, _ = filepath.Abs(os.Args[1])
-		musicDir, _ = filepath.Abs(os.Args[2])
+	args := flag.Args()
+	if len(args) >= 2 {
+		// Explicit paths provided as positional args
+		playlistDir, _ = filepath.Abs(args[0])
+		musicDir, _ = filepath.Abs(args[1])
 		// Derive device path from playlist dir parent
 		devicePath = filepath.Dir(playlistDir)
 	} else {
