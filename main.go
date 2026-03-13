@@ -19,7 +19,8 @@ import (
 type screen int
 
 const (
-	screenLoading screen = iota
+	screenNoDevice screen = iota
+	screenLoading
 	screenPlaylistPicker
 	screenSongBrowser
 	screenConfirmation
@@ -93,6 +94,14 @@ var (
 				Bold(true).
 				Foreground(lipgloss.Color("255")).
 				Background(lipgloss.Color("35")).
+				Padding(1, 3)
+	// Device styles
+	waitingStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205")).Padding(2, 4)
+	waitingHintStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Padding(0, 4)
+	ejectConfirmStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("255")).
+				Background(lipgloss.Color("166")).
 				Padding(1, 3)
 	// Podcast styles
 	podcastWrapStyle     = lipgloss.NewStyle().Padding(1, 2)
@@ -174,6 +183,11 @@ type Model struct {
 	err              error
 	message          string
 
+	// Device fields
+	deviceConnected bool
+	devicePath      string // Base mount path, e.g. /Volumes/NO NAME
+	confirmEject    bool   // Whether eject confirmation overlay is showing
+
 	// Podcast fields
 	podcastConfig      PodcastConfig
 	podcastAudioDir    string // e.g. /Volumes/NO NAME/Audiobooks
@@ -223,7 +237,7 @@ type podcastAddDoneMsg struct {
 	summary string
 }
 
-func initialModel(playlistDir, musicDir string) Model {
+func initialModel(devicePath, playlistDir, musicDir string) Model {
 	ti := textinput.New()
 	ti.Placeholder = "Type to search..."
 	ti.CharLimit = 100
@@ -235,13 +249,22 @@ func initialModel(playlistDir, musicDir string) Model {
 	podcastTi.CharLimit = 100
 	podcastTi.Width = 40
 
-	// Determine podcast audio dir (sibling to Playlists dir)
-	baseDir := filepath.Dir(playlistDir)
-	podcastAudioDir := filepath.Join(baseDir, "Audiobooks")
-	podcastConfigPath := filepath.Join(podcastAudioDir, "podcasts.json")
+	// Determine initial screen based on device presence
+	startScreen := screenNoDevice
+	deviceConnected := false
+	var podcastAudioDir, podcastConfigPath string
+
+	if devicePath != "" && CheckDevice(devicePath) {
+		startScreen = screenLoading
+		deviceConnected = true
+		podcastAudioDir = filepath.Join(devicePath, "Audiobooks")
+		podcastConfigPath = filepath.Join(podcastAudioDir, "podcasts.json")
+	}
 
 	return Model{
-		screen:             screenLoading,
+		screen:             startScreen,
+		deviceConnected:    deviceConnected,
+		devicePath:         devicePath,
 		playlistDir:        playlistDir,
 		musicDir:           musicDir,
 		selectedSongs:      make(map[string]bool),
@@ -257,6 +280,9 @@ func initialModel(playlistDir, musicDir string) Model {
 }
 
 func (m Model) Init() tea.Cmd {
+	if m.screen == screenNoDevice {
+		return WatchForDevice(m.devicePath)
+	}
 	return tea.Batch(
 		loadPlaylists(m.playlistDir),
 		loadSongs(m.musicDir),
@@ -367,6 +393,46 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Stay on adding screen to show results
 		return m, nil
 
+	case deviceStatusMsg:
+		if msg.connected {
+			m.deviceConnected = true
+			m.devicePath = msg.path
+			m.playlistDir = filepath.Join(msg.path, "Playlists")
+			m.musicDir = filepath.Join(msg.path, "Music")
+			m.podcastAudioDir = filepath.Join(msg.path, "Audiobooks")
+			m.podcastConfigPath = filepath.Join(m.podcastAudioDir, "podcasts.json")
+			m.screen = screenLoading
+			m.songsLoaded = false
+			m.playlistsLoaded = false
+			return m, tea.Batch(
+				loadPlaylists(m.playlistDir),
+				loadSongs(m.musicDir),
+			)
+		}
+		// Device not found yet, keep polling
+		return m, WatchForDevice(m.devicePath)
+
+	case deviceEjectMsg:
+		if msg.err != nil {
+			m.message = fmt.Sprintf("Eject failed: %v", msg.err)
+			return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+				return toastDismissMsg{}
+			})
+		}
+		// Eject succeeded — reset state and go to no-device screen
+		m.deviceConnected = false
+		m.confirmEject = false
+		m.playlists = nil
+		m.songs = nil
+		m.songsLoaded = false
+		m.playlistsLoaded = false
+		m.selectedPlaylist = nil
+		m.selectedSongs = make(map[string]bool)
+		m.selectedOrder = nil
+		m.screen = screenNoDevice
+		m.message = ""
+		return m, WatchForDevice(m.devicePath)
+
 	case tea.KeyMsg:
 		// Global quit
 		if msg.Type == tea.KeyCtrlC {
@@ -374,6 +440,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch m.screen {
+		case screenNoDevice:
+			if key.Matches(msg, keys.Quit) {
+				return m, tea.Quit
+			}
+			return m, nil
 		case screenLoading:
 			return m, nil
 		case screenPlaylistPicker:
@@ -425,6 +496,7 @@ func (m *Model) setupPlaylistList() {
 	m.playlistList.AdditionalShortHelpKeys = func() []key.Binding {
 		return []key.Binding{
 			key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "backup")),
+			key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "eject")),
 		}
 	}
 }
@@ -439,9 +511,25 @@ func (m Model) startBackup() tea.Cmd {
 }
 
 func (m Model) updatePlaylistPicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Handle eject confirmation overlay
+	if m.confirmEject {
+		switch {
+		case key.Matches(msg, keys.Yes):
+			m.confirmEject = false
+			return m, EjectDevice(m.devicePath)
+		case key.Matches(msg, keys.No), key.Matches(msg, keys.Back):
+			m.confirmEject = false
+			return m, nil
+		}
+		return m, nil
+	}
+
 	switch {
 	case key.Matches(msg, keys.Quit):
 		return m, tea.Quit
+	case msg.String() == "u" && m.playlistList.FilterState() == list.Unfiltered:
+		m.confirmEject = true
+		return m, nil
 	case msg.String() == "b" && m.playlistList.FilterState() == list.Unfiltered:
 		return m, m.startBackup()
 	case msg.Type == tea.KeyEnter:
@@ -887,6 +975,8 @@ func (m Model) View() string {
 	}
 
 	switch m.screen {
+	case screenNoDevice:
+		return m.viewNoDevice()
 	case screenLoading:
 		return m.viewLoading()
 	case screenPlaylistPicker:
@@ -911,6 +1001,13 @@ func (m Model) View() string {
 	return ""
 }
 
+func (m Model) viewNoDevice() string {
+	title := waitingStyle.Render("No Rockbox player detected")
+	hint := waitingHintStyle.Render("Waiting for device... (q: quit)")
+	content := title + "\n\n" + hint
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
+}
+
 func (m Model) viewLoading() string {
 	var status strings.Builder
 	status.WriteString(loadingStyle.Render("Loading..."))
@@ -933,6 +1030,11 @@ func (m Model) viewLoading() string {
 
 func (m Model) viewPlaylistPicker() string {
 	base := m.playlistList.View()
+
+	if m.confirmEject {
+		toast := ejectConfirmStyle.Render("Eject player? (y/n)")
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, toast)
+	}
 
 	if m.message != "" {
 		toast := toastStyle.Render(m.message)
@@ -1140,34 +1242,24 @@ func (m Model) viewPodcastAdding() string {
 }
 
 func main() {
-	// Default paths - can be overridden with args
-	playlistDir := "/Volumes/NO NAME/Playlists"
-	musicDir := "/Volumes/NO NAME/Music"
+	var devicePath, playlistDir, musicDir string
 
 	if len(os.Args) >= 3 {
-		playlistDir = os.Args[1]
-		musicDir = os.Args[2]
+		// Explicit paths provided
+		playlistDir, _ = filepath.Abs(os.Args[1])
+		musicDir, _ = filepath.Abs(os.Args[2])
+		// Derive device path from playlist dir parent
+		devicePath = filepath.Dir(playlistDir)
+	} else {
+		// Auto-detect device
+		devicePath = FindDevicePath()
+		if devicePath != "" {
+			playlistDir = filepath.Join(devicePath, "Playlists")
+			musicDir = filepath.Join(devicePath, "Music")
+		}
 	}
 
-	// Validate directories exist
-	if _, err := os.Stat(playlistDir); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "Playlist folder not found: %s\n", playlistDir)
-		fmt.Fprintf(os.Stderr, "Is your Rockbox player connected?\n")
-		fmt.Fprintf(os.Stderr, "\nUsage: rockbox-playlist [playlist-dir] [music-dir]\n")
-		os.Exit(1)
-	}
-	if _, err := os.Stat(musicDir); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "Music folder not found: %s\n", musicDir)
-		fmt.Fprintf(os.Stderr, "Is your Rockbox player connected?\n")
-		fmt.Fprintf(os.Stderr, "\nUsage: rockbox-playlist [playlist-dir] [music-dir]\n")
-		os.Exit(1)
-	}
-
-	// Ensure paths are absolute
-	playlistDir, _ = filepath.Abs(playlistDir)
-	musicDir, _ = filepath.Abs(musicDir)
-
-	p := tea.NewProgram(initialModel(playlistDir, musicDir), tea.WithAltScreen())
+	p := tea.NewProgram(initialModel(devicePath, playlistDir, musicDir), tea.WithAltScreen())
 	finalModel, err := p.Run()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to start: %v\n", err)
