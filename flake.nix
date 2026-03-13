@@ -23,6 +23,9 @@
             go
             gopls
             gotools
+            vhs
+            ttyd
+            ffmpeg
           ];
         };
 
