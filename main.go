@@ -25,11 +25,9 @@ const (
 	screenPlaylistPicker
 	screenSongBrowser
 	screenConfirmation
-	screenDone
 	// Playlist creation
 	screenCreatePlaylist
 	// Sync screens
-	screenSyncConfirm
 	screenSync
 	// Podcast screens
 	screenPodcastMenu
@@ -102,28 +100,18 @@ var (
 				Background(lipgloss.Color("35")).
 				Padding(1, 3)
 	// Device styles
-	waitingStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205")).Padding(2, 4)
-	waitingHintStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Padding(0, 4)
-	ejectConfirmStyle = lipgloss.NewStyle().
+	waitingStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205")).Padding(2, 4)
+	waitingHintStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Padding(0, 4)
+	dangerConfirmStyle = lipgloss.NewStyle().
 				Bold(true).
 				Foreground(lipgloss.Color("255")).
 				Background(lipgloss.Color("166")).
 				Padding(1, 3)
 	// Sync styles
-	syncTitleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205")).MarginBottom(1)
-	syncOutputStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	syncConfirmStyle = lipgloss.NewStyle().
-				Bold(true).
-				Foreground(lipgloss.Color("255")).
-				Background(lipgloss.Color("33")).
-				Padding(1, 3)
-	syncRetryStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("255")).
-			Background(lipgloss.Color("166")).
-			Padding(1, 3)
+	syncTitleStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205")).MarginBottom(1)
+	syncOutputStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	// Podcast styles
-	podcastWrapStyle     = lipgloss.NewStyle().Padding(1, 2)
+	wrapStyle            = lipgloss.NewStyle().Padding(1, 2)
 	podcastTitleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205")).MarginBottom(1)
 	podcastItemStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 	podcastSelectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("170")).Bold(true)
@@ -566,8 +554,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateConfirmation(msg)
 		case screenCreatePlaylist:
 			return m.updateCreatePlaylist(msg)
-		case screenSyncConfirm:
-			return m.updateSyncConfirm(msg)
 		case screenSync:
 			return m.updateSync(msg)
 		case screenPodcastMenu:
@@ -580,8 +566,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updatePodcastResults(msg)
 		case screenPodcastAdding:
 			return m.updatePodcastAdding(msg)
-		case screenDone:
-			return m, tea.Quit
 		}
 	}
 
@@ -858,10 +842,14 @@ func (m Model) updateConfirmation(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, keys.Quit):
 		return m, tea.Quit
 	case key.Matches(msg, keys.Yes):
-		// Add songs to playlist
-		var entries []string
+		// Add songs to playlist in selection order
+		songsByPath := make(map[string]Song, len(m.songs))
 		for _, song := range m.songs {
-			if m.selectedSongs[song.Path] {
+			songsByPath[song.Path] = song
+		}
+		var entries []string
+		for _, path := range m.selectedOrder {
+			if song, ok := songsByPath[path]; ok {
 				entries = append(entries, song.RelativePath(m.musicDir))
 			}
 		}
@@ -956,12 +944,12 @@ func (m Model) handleSyncKey() (tea.Model, tea.Cmd) {
 
 	// Check if source directory exists
 	if _, err := os.Stat(m.syncSource); os.IsNotExist(err) {
-		// Source not mounted — show retry prompt
 		m.syncError = fmt.Sprintf("Source not found: %s", m.syncSource)
 		m.syncPendingFiles = nil
 		m.syncConfirmPending = false
 		m.syncComplete = false
-		m.screen = screenSyncConfirm
+		m.syncInProgress = false
+		m.screen = screenSync
 		return m, nil
 	}
 
@@ -973,31 +961,6 @@ func (m Model) handleSyncKey() (tea.Model, tea.Cmd) {
 	m.syncComplete = false
 	m.screen = screenSync
 	return m, runSyncDryRun(m.syncSource, m.musicDir)
-}
-
-func (m Model) updateSyncConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch {
-	case key.Matches(msg, keys.Quit):
-		return m, tea.Quit
-	case key.Matches(msg, keys.Yes):
-		// Check source exists (might be a retry)
-		if _, err := os.Stat(m.syncSource); os.IsNotExist(err) {
-			m.syncError = fmt.Sprintf("Source not found: %s", m.syncSource)
-			return m, nil
-		}
-		// Start dry-run
-		m.syncInProgress = true
-		m.syncError = ""
-		m.syncPendingFiles = nil
-		m.syncConfirmPending = false
-		m.syncComplete = false
-		m.screen = screenSync
-		return m, runSyncDryRun(m.syncSource, m.musicDir)
-	case key.Matches(msg, keys.No), key.Matches(msg, keys.Back):
-		m.screen = screenPlaylistPicker
-		return m, nil
-	}
-	return m, nil
 }
 
 func (m Model) updateSync(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1307,8 +1270,6 @@ func (m Model) View() string {
 		return m.viewConfirmation()
 	case screenCreatePlaylist:
 		return m.viewCreatePlaylist()
-	case screenSyncConfirm:
-		return m.viewSyncConfirm()
 	case screenSync:
 		return m.viewSync()
 	case screenPodcastMenu:
@@ -1321,8 +1282,6 @@ func (m Model) View() string {
 		return m.viewPodcastResults()
 	case screenPodcastAdding:
 		return m.viewPodcastAdding()
-	case screenDone:
-		return m.message + "\n"
 	}
 	return ""
 }
@@ -1358,13 +1317,13 @@ func (m Model) viewPlaylistPicker() string {
 	base := m.playlistList.View()
 
 	if m.confirmEject {
-		toast := ejectConfirmStyle.Render("Eject player? (y/n)")
+		toast := dangerConfirmStyle.Render("Eject player? (y/n)")
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, toast)
 	}
 
 	if m.confirmDelete {
 		if item, ok := m.playlistList.SelectedItem().(playlistItem); ok {
-			toast := ejectConfirmStyle.Render(fmt.Sprintf("Delete %s? (y/n)", item.playlist.Name))
+			toast := dangerConfirmStyle.Render(fmt.Sprintf("Delete %s? (y/n)", item.playlist.Name))
 			return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, toast)
 		}
 	}
@@ -1458,9 +1417,13 @@ func (m Model) viewConfirmation() string {
 	b.WriteString(confirmTitleStyle.Render(fmt.Sprintf("Add %d songs to \"%s\"?", len(m.selectedSongs), m.selectedPlaylist.Name)))
 	b.WriteString("\n\n")
 
-	// List selected songs
+	// List selected songs in selection order
+	songsByPath := make(map[string]Song, len(m.songs))
 	for _, song := range m.songs {
-		if m.selectedSongs[song.Path] {
+		songsByPath[song.Path] = song
+	}
+	for _, path := range m.selectedOrder {
+		if song, ok := songsByPath[path]; ok {
 			b.WriteString(songListStyle.Render("• " + song.ConfirmDisplayName()))
 			b.WriteString("\n")
 		}
@@ -1470,23 +1433,6 @@ func (m Model) viewConfirmation() string {
 	b.WriteString(statusBarStyle.Render("Press y to confirm, n to cancel"))
 
 	return b.String()
-}
-
-func (m Model) viewSyncConfirm() string {
-	sourceExists := true
-	if _, err := os.Stat(m.syncSource); os.IsNotExist(err) {
-		sourceExists = false
-	}
-
-	if !sourceExists {
-		// Source not mounted — retry prompt
-		content := syncRetryStyle.Render(fmt.Sprintf("Source not mounted: %s\n\nRetry? (y/n)", m.syncSource))
-		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
-	}
-
-	// Normal confirmation
-	content := syncConfirmStyle.Render(fmt.Sprintf("Sync music from %s? (y/n)", m.syncSource))
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
 }
 
 func (m Model) viewSync() string {
@@ -1556,7 +1502,7 @@ func (m Model) viewSync() string {
 		b.WriteString(statusBarStyle.Render("Press enter or esc to continue"))
 	}
 
-	return podcastWrapStyle.Render(b.String())
+	return wrapStyle.Render(b.String())
 }
 
 func (m Model) viewPodcastMenu() string {
@@ -1577,7 +1523,7 @@ func (m Model) viewPodcastMenu() string {
 	b.WriteString("\n")
 	b.WriteString(statusBarStyle.Render(fmt.Sprintf("%d podcasts subscribed | esc: back", len(m.podcastConfig))))
 
-	return podcastWrapStyle.Render(b.String())
+	return wrapStyle.Render(b.String())
 }
 
 func (m Model) viewPodcastUpdate() string {
@@ -1596,7 +1542,7 @@ func (m Model) viewPodcastUpdate() string {
 		b.WriteString(statusBarStyle.Render("Press enter or esc to continue"))
 	}
 
-	return podcastWrapStyle.Render(b.String())
+	return wrapStyle.Render(b.String())
 }
 
 func (m Model) viewPodcastSearch() string {
@@ -1608,7 +1554,7 @@ func (m Model) viewPodcastSearch() string {
 	b.WriteString("\n\n")
 	b.WriteString(statusBarStyle.Render("enter: search | esc: back"))
 
-	return podcastWrapStyle.Render(b.String())
+	return wrapStyle.Render(b.String())
 }
 
 func (m Model) viewPodcastResults() string {
@@ -1635,7 +1581,7 @@ func (m Model) viewPodcastResults() string {
 	b.WriteString("\n")
 	b.WriteString(statusBarStyle.Render("enter: add podcast | esc: back"))
 
-	return podcastWrapStyle.Render(b.String())
+	return wrapStyle.Render(b.String())
 }
 
 func (m Model) viewPodcastAdding() string {
@@ -1658,7 +1604,7 @@ func (m Model) viewPodcastAdding() string {
 		b.WriteString(statusBarStyle.Render("Press enter or esc to continue"))
 	}
 
-	return podcastWrapStyle.Render(b.String())
+	return wrapStyle.Render(b.String())
 }
 
 func main() {
