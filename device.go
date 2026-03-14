@@ -23,23 +23,21 @@ type deviceEjectMsg struct {
 	err error
 }
 
-// Common mount point patterns to scan when no explicit path is given.
-var defaultDevicePaths = []string{
-	"/Volumes/NO NAME",
-	"/mnt/rockbox",
-	"/media/*/NO NAME",
-}
-
 // CheckDevice checks whether a Rockbox player is mounted at the given path.
 // It verifies the path exists and contains expected subdirectories.
-func CheckDevice(path string) bool {
+// Uses the provided directory names (e.g. "Music", "Playlists") for detection.
+func CheckDevice(path string, subDirs ...string) bool {
 	info, err := os.Stat(path)
 	if err != nil || !info.IsDir() {
 		return false
 	}
 
+	if len(subDirs) == 0 {
+		subDirs = []string{"Music", "Playlists"}
+	}
+
 	// Check for at least one of the expected dirs
-	for _, sub := range []string{"Music", "Playlists"} {
+	for _, sub := range subDirs {
 		subPath := filepath.Join(path, sub)
 		if info, err := os.Stat(subPath); err == nil && info.IsDir() {
 			return true
@@ -49,22 +47,22 @@ func CheckDevice(path string) bool {
 	return false
 }
 
-// FindDevicePath scans common mount locations for a Rockbox player.
+// FindDevicePath scans the given search paths for a Rockbox player.
 // Returns the first matching path, or empty string if none found.
-func FindDevicePath() string {
-	for _, pattern := range defaultDevicePaths {
+func FindDevicePath(searchPaths []string, subDirs ...string) string {
+	for _, pattern := range searchPaths {
 		if strings.Contains(pattern, "*") {
 			matches, err := filepath.Glob(pattern)
 			if err != nil {
 				continue
 			}
 			for _, match := range matches {
-				if CheckDevice(match) {
+				if CheckDevice(match, subDirs...) {
 					return match
 				}
 			}
 		} else {
-			if CheckDevice(pattern) {
+			if CheckDevice(pattern, subDirs...) {
 				return pattern
 			}
 		}
@@ -74,7 +72,7 @@ func FindDevicePath() string {
 
 // WatchForDevice returns a tea.Cmd that polls for device presence.
 // It checks every interval and sends a deviceStatusMsg.
-func WatchForDevice(devicePath string) tea.Cmd {
+func WatchForDevice(devicePath string, searchPaths []string) tea.Cmd {
 	return func() tea.Msg {
 		time.Sleep(2 * time.Second)
 
@@ -86,7 +84,7 @@ func WatchForDevice(devicePath string) tea.Cmd {
 		}
 
 		// Auto-detect
-		found := FindDevicePath()
+		found := FindDevicePath(searchPaths)
 		return deviceStatusMsg{
 			connected: found != "",
 			path:      found,
