@@ -207,9 +207,13 @@ type Model struct {
 	confirmEject    bool   // Whether eject confirmation overlay is showing
 
 	// Sync fields
-	syncSource     string // Source directory for music sync
-	syncInProgress bool   // Whether sync is running
-	syncOutput     string // Rsync output
+	syncSource         string   // Source directory for music sync
+	syncInProgress     bool     // Whether sync is running
+	syncPendingFiles   []string // Files that would be synced (from dry-run)
+	syncConfirmPending bool     // Waiting for y/n confirmation
+	syncComplete       bool     // Sync finished successfully
+	syncCount          int      // Number of files synced
+	syncError          string   // Error message if sync failed
 
 	// Podcast fields
 	podcastConfig      PodcastConfig
@@ -464,12 +468,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Stay on adding screen to show results
 		return m, nil
 
+	case syncDryRunMsg:
+		m.syncInProgress = false
+		if msg.err != nil {
+			m.syncError = msg.err.Error()
+			m.syncPendingFiles = nil
+		} else {
+			m.syncPendingFiles = msg.files
+			m.syncConfirmPending = len(msg.files) > 0
+		}
+		return m, nil
+
 	case syncDoneMsg:
 		m.syncInProgress = false
 		if msg.err != nil {
-			m.syncOutput = fmt.Sprintf("Error: %v\n\n%s", msg.err, msg.output)
+			m.syncError = msg.err.Error()
+			m.syncComplete = false
 		} else {
-			m.syncOutput = msg.output
+			m.syncComplete = true
+			m.syncCount = msg.count
 		}
 		// Stay on sync screen to show results
 		return m, nil
@@ -827,15 +844,22 @@ func (m Model) handleSyncKey() (tea.Model, tea.Cmd) {
 	// Check if source directory exists
 	if _, err := os.Stat(m.syncSource); os.IsNotExist(err) {
 		// Source not mounted — show retry prompt
-		m.syncOutput = fmt.Sprintf("Source not found: %s", m.syncSource)
+		m.syncError = fmt.Sprintf("Source not found: %s", m.syncSource)
+		m.syncPendingFiles = nil
+		m.syncConfirmPending = false
+		m.syncComplete = false
 		m.screen = screenSyncConfirm
 		return m, nil
 	}
 
-	// Source exists — show sync confirmation
-	m.syncOutput = ""
-	m.screen = screenSyncConfirm
-	return m, nil
+	// Source exists — start dry-run to see what would be synced
+	m.syncInProgress = true
+	m.syncError = ""
+	m.syncPendingFiles = nil
+	m.syncConfirmPending = false
+	m.syncComplete = false
+	m.screen = screenSync
+	return m, runSyncDryRun(m.syncSource, m.musicDir)
 }
 
 func (m Model) updateSyncConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -845,15 +869,17 @@ func (m Model) updateSyncConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, keys.Yes):
 		// Check source exists (might be a retry)
 		if _, err := os.Stat(m.syncSource); os.IsNotExist(err) {
-			// Still not found
-			m.syncOutput = fmt.Sprintf("Source not found: %s", m.syncSource)
+			m.syncError = fmt.Sprintf("Source not found: %s", m.syncSource)
 			return m, nil
 		}
-		// Start sync
+		// Start dry-run
 		m.syncInProgress = true
-		m.syncOutput = ""
+		m.syncError = ""
+		m.syncPendingFiles = nil
+		m.syncConfirmPending = false
+		m.syncComplete = false
 		m.screen = screenSync
-		return m, runSync(m.syncSource, m.musicDir)
+		return m, runSyncDryRun(m.syncSource, m.musicDir)
 	case key.Matches(msg, keys.No), key.Matches(msg, keys.Back):
 		m.screen = screenPlaylistPicker
 		return m, nil
@@ -865,12 +891,37 @@ func (m Model) updateSync(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyCtrlC:
 		return m, tea.Quit
-	case tea.KeyEsc, tea.KeyEnter:
-		// Only allow exit if sync is complete
-		if !m.syncInProgress {
+	}
+
+	// If sync is in progress, ignore all keys
+	if m.syncInProgress {
+		return m, nil
+	}
+
+	// If waiting for confirmation after dry-run
+	if m.syncConfirmPending {
+		switch {
+		case key.Matches(msg, keys.Yes):
+			// Run actual sync
+			m.syncInProgress = true
+			m.syncConfirmPending = false
+			return m, runSync(m.syncSource, m.musicDir, len(m.syncPendingFiles))
+		case key.Matches(msg, keys.No), key.Matches(msg, keys.Back):
 			m.screen = screenPlaylistPicker
-			m.syncOutput = ""
+			m.syncPendingFiles = nil
+			m.syncConfirmPending = false
+			return m, nil
 		}
+		return m, nil
+	}
+
+	// Sync complete or error — any key exits
+	switch msg.Type {
+	case tea.KeyEsc, tea.KeyEnter:
+		m.screen = screenPlaylistPicker
+		m.syncPendingFiles = nil
+		m.syncComplete = false
+		m.syncError = ""
 		return m, nil
 	}
 	return m, nil
@@ -1320,26 +1371,65 @@ func (m Model) viewSync() string {
 	var b strings.Builder
 
 	b.WriteString(syncTitleStyle.Render("Syncing Music"))
-	b.WriteString("\n")
+	b.WriteString("\n\n")
 
 	if m.syncInProgress {
-		b.WriteString(syncOutputStyle.Render("Running rsync, please wait..."))
+		if m.syncConfirmPending || len(m.syncPendingFiles) == 0 {
+			b.WriteString(syncOutputStyle.Render("Checking for new songs..."))
+		} else {
+			b.WriteString(syncOutputStyle.Render("Syncing, please wait..."))
+		}
 		b.WriteString("\n\n")
 		b.WriteString(statusBarStyle.Render("This may take a while..."))
-	} else {
-		// Show rsync output, capped to visible height
-		if m.syncOutput != "" {
-			lines := strings.Split(m.syncOutput, "\n")
-			maxLines := m.height - 6
-			if maxLines < 1 {
-				maxLines = 1
-			}
-			if len(lines) > maxLines {
-				// Show last N lines
-				lines = lines[len(lines)-maxLines:]
-			}
-			b.WriteString(syncOutputStyle.Render(strings.Join(lines, "\n")))
+	} else if m.syncError != "" {
+		// Error occurred
+		b.WriteString(syncOutputStyle.Render("Error: " + m.syncError))
+		b.WriteString("\n\n")
+		b.WriteString(statusBarStyle.Render("Press enter or esc to continue"))
+	} else if m.syncComplete {
+		// Sync completed successfully
+		if m.syncCount == 1 {
+			b.WriteString(syncOutputStyle.Render("1 song added to player"))
+		} else {
+			b.WriteString(syncOutputStyle.Render(fmt.Sprintf("%d songs added to player", m.syncCount)))
 		}
+		b.WriteString("\n\n")
+		b.WriteString(statusBarStyle.Render("Press enter or esc to continue"))
+	} else if m.syncConfirmPending {
+		// Dry-run complete, show files to be synced
+		count := len(m.syncPendingFiles)
+		if count == 1 {
+			b.WriteString(syncOutputStyle.Render("1 song will be added:"))
+		} else {
+			b.WriteString(syncOutputStyle.Render(fmt.Sprintf("%d songs will be added:", count)))
+		}
+		b.WriteString("\n\n")
+
+		// Show file list, truncated if too many
+		maxLines := m.height - 10
+		if maxLines < 5 {
+			maxLines = 5
+		}
+		if maxLines > 20 {
+			maxLines = 20
+		}
+
+		for i, file := range m.syncPendingFiles {
+			if i >= maxLines {
+				remaining := count - maxLines
+				b.WriteString(syncOutputStyle.Render(fmt.Sprintf("  ...and %d more", remaining)))
+				b.WriteString("\n")
+				break
+			}
+			b.WriteString(syncOutputStyle.Render("  " + file))
+			b.WriteString("\n")
+		}
+
+		b.WriteString("\n")
+		b.WriteString(statusBarStyle.Render("Press y to sync, n to cancel"))
+	} else {
+		// No files to sync (dry-run returned empty)
+		b.WriteString(syncOutputStyle.Render("Music is already up to date"))
 		b.WriteString("\n\n")
 		b.WriteString(statusBarStyle.Render("Press enter or esc to continue"))
 	}
