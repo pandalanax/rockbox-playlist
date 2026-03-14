@@ -26,6 +26,9 @@ const (
 	screenSongBrowser
 	screenConfirmation
 	screenDone
+	// Sync screens
+	screenSyncConfirm
+	screenSync
 	// Podcast screens
 	screenPodcastMenu
 	screenPodcastUpdate
@@ -104,6 +107,19 @@ var (
 				Foreground(lipgloss.Color("255")).
 				Background(lipgloss.Color("166")).
 				Padding(1, 3)
+	// Sync styles
+	syncTitleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205")).MarginBottom(1)
+	syncOutputStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	syncConfirmStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("255")).
+				Background(lipgloss.Color("33")).
+				Padding(1, 3)
+	syncRetryStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("255")).
+			Background(lipgloss.Color("166")).
+			Padding(1, 3)
 	// Podcast styles
 	podcastWrapStyle     = lipgloss.NewStyle().Padding(1, 2)
 	podcastTitleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205")).MarginBottom(1)
@@ -189,6 +205,11 @@ type Model struct {
 	devicePath      string // Base mount path, e.g. /Volumes/NO NAME
 	confirmEject    bool   // Whether eject confirmation overlay is showing
 
+	// Sync fields
+	syncSource     string // Source directory for music sync
+	syncInProgress bool   // Whether sync is running
+	syncOutput     string // Rsync output
+
 	// Podcast fields
 	podcastConfig      PodcastConfig
 	podcastAudioDir    string // e.g. /Volumes/NO NAME/Audiobooks
@@ -240,7 +261,7 @@ type podcastAddDoneMsg struct {
 	summary string
 }
 
-func initialModel(devicePath, playlistDir, musicDir string) Model {
+func initialModel(devicePath, playlistDir, musicDir, syncSource string) Model {
 	ti := textinput.New()
 	ti.Placeholder = "Type to search..."
 	ti.CharLimit = 100
@@ -270,6 +291,7 @@ func initialModel(devicePath, playlistDir, musicDir string) Model {
 		devicePath:         devicePath,
 		playlistDir:        playlistDir,
 		musicDir:           musicDir,
+		syncSource:         syncSource,
 		selectedSongs:      make(map[string]bool),
 		existingEntries:    make(map[string]bool),
 		searchInput:        ti,
@@ -284,7 +306,7 @@ func initialModel(devicePath, playlistDir, musicDir string) Model {
 
 // initialModelServe creates a Model for SSH serve mode.
 // Starts on the no-device screen if device is not connected, otherwise loads immediately.
-func initialModelServe(devicePath string, width, height int) Model {
+func initialModelServe(devicePath, syncSource string, width, height int) Model {
 	playlistDir := ""
 	musicDir := ""
 	if devicePath != "" && CheckDevice(devicePath) {
@@ -300,7 +322,7 @@ func initialModelServe(devicePath string, width, height int) Model {
 		}
 	}
 
-	m := initialModel(devicePath, playlistDir, musicDir)
+	m := initialModel(devicePath, playlistDir, musicDir, syncSource)
 	m.width = width
 	m.height = height
 	return m
@@ -440,6 +462,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Stay on adding screen to show results
 		return m, nil
 
+	case syncDoneMsg:
+		m.syncInProgress = false
+		if msg.err != nil {
+			m.syncOutput = fmt.Sprintf("Error: %v\n\n%s", msg.err, msg.output)
+		} else {
+			m.syncOutput = msg.output
+		}
+		// Stay on sync screen to show results
+		return m, nil
+
 	case deviceStatusMsg:
 		if msg.connected {
 			m.deviceConnected = true
@@ -500,6 +532,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateSongBrowser(msg)
 		case screenConfirmation:
 			return m.updateConfirmation(msg)
+		case screenSyncConfirm:
+			return m.updateSyncConfirm(msg)
+		case screenSync:
+			return m.updateSync(msg)
 		case screenPodcastMenu:
 			return m.updatePodcastMenu(msg)
 		case screenPodcastUpdate:
@@ -540,11 +576,16 @@ func (m *Model) setupPlaylistList() {
 	m.playlistList.SetShowStatusBar(true)
 	m.playlistList.SetFilteringEnabled(true)
 	m.playlistList.Styles.Title = titleStyle
+	syncSource := m.syncSource
 	m.playlistList.AdditionalShortHelpKeys = func() []key.Binding {
-		return []key.Binding{
+		bindings := []key.Binding{
 			key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "backup")),
 			key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "eject")),
 		}
+		if syncSource != "" {
+			bindings = append(bindings, key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "sync")))
+		}
+		return bindings
 	}
 }
 
@@ -577,6 +618,8 @@ func (m Model) updatePlaylistPicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case msg.String() == "u" && m.playlistList.FilterState() == list.Unfiltered:
 		m.confirmEject = true
 		return m, nil
+	case msg.String() == "s" && m.playlistList.FilterState() == list.Unfiltered:
+		return m.handleSyncKey()
 	case msg.String() == "b" && m.playlistList.FilterState() == list.Unfiltered:
 		return m, m.startBackup()
 	case msg.Type == tea.KeyEnter:
@@ -764,6 +807,67 @@ func (m Model) updateConfirmation(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		})
 	case key.Matches(msg, keys.No), key.Matches(msg, keys.Back):
 		m.screen = screenSongBrowser
+		return m, nil
+	}
+	return m, nil
+}
+
+// handleSyncKey handles pressing 's' on the playlist picker.
+func (m Model) handleSyncKey() (tea.Model, tea.Cmd) {
+	if m.syncSource == "" {
+		m.message = "No sync source configured. Use --sync-source flag."
+		return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+			return toastDismissMsg{}
+		})
+	}
+
+	// Check if source directory exists
+	if _, err := os.Stat(m.syncSource); os.IsNotExist(err) {
+		// Source not mounted — show retry prompt
+		m.syncOutput = fmt.Sprintf("Source not found: %s", m.syncSource)
+		m.screen = screenSyncConfirm
+		return m, nil
+	}
+
+	// Source exists — show sync confirmation
+	m.syncOutput = ""
+	m.screen = screenSyncConfirm
+	return m, nil
+}
+
+func (m Model) updateSyncConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, keys.Quit):
+		return m, tea.Quit
+	case key.Matches(msg, keys.Yes):
+		// Check source exists (might be a retry)
+		if _, err := os.Stat(m.syncSource); os.IsNotExist(err) {
+			// Still not found
+			m.syncOutput = fmt.Sprintf("Source not found: %s", m.syncSource)
+			return m, nil
+		}
+		// Start sync
+		m.syncInProgress = true
+		m.syncOutput = ""
+		m.screen = screenSync
+		return m, runSync(m.syncSource, m.musicDir)
+	case key.Matches(msg, keys.No), key.Matches(msg, keys.Back):
+		m.screen = screenPlaylistPicker
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m Model) updateSync(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyCtrlC:
+		return m, tea.Quit
+	case tea.KeyEsc, tea.KeyEnter:
+		// Only allow exit if sync is complete
+		if !m.syncInProgress {
+			m.screen = screenPlaylistPicker
+			m.syncOutput = ""
+		}
 		return m, nil
 	}
 	return m, nil
@@ -1032,6 +1136,10 @@ func (m Model) View() string {
 		return m.viewSongBrowser()
 	case screenConfirmation:
 		return m.viewConfirmation()
+	case screenSyncConfirm:
+		return m.viewSyncConfirm()
+	case screenSync:
+		return m.viewSync()
 	case screenPodcastMenu:
 		return m.viewPodcastMenu()
 	case screenPodcastUpdate:
@@ -1186,6 +1294,54 @@ func (m Model) viewConfirmation() string {
 	return b.String()
 }
 
+func (m Model) viewSyncConfirm() string {
+	sourceExists := true
+	if _, err := os.Stat(m.syncSource); os.IsNotExist(err) {
+		sourceExists = false
+	}
+
+	if !sourceExists {
+		// Source not mounted — retry prompt
+		content := syncRetryStyle.Render(fmt.Sprintf("Source not mounted: %s\n\nRetry? (y/n)", m.syncSource))
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
+	}
+
+	// Normal confirmation
+	content := syncConfirmStyle.Render(fmt.Sprintf("Sync music from %s? (y/n)", m.syncSource))
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
+}
+
+func (m Model) viewSync() string {
+	var b strings.Builder
+
+	b.WriteString(syncTitleStyle.Render("Syncing Music"))
+	b.WriteString("\n")
+
+	if m.syncInProgress {
+		b.WriteString(syncOutputStyle.Render("Running rsync, please wait..."))
+		b.WriteString("\n\n")
+		b.WriteString(statusBarStyle.Render("This may take a while..."))
+	} else {
+		// Show rsync output, capped to visible height
+		if m.syncOutput != "" {
+			lines := strings.Split(m.syncOutput, "\n")
+			maxLines := m.height - 6
+			if maxLines < 1 {
+				maxLines = 1
+			}
+			if len(lines) > maxLines {
+				// Show last N lines
+				lines = lines[len(lines)-maxLines:]
+			}
+			b.WriteString(syncOutputStyle.Render(strings.Join(lines, "\n")))
+		}
+		b.WriteString("\n\n")
+		b.WriteString(statusBarStyle.Render("Press enter or esc to continue"))
+	}
+
+	return podcastWrapStyle.Render(b.String())
+}
+
 func (m Model) viewPodcastMenu() string {
 	var b strings.Builder
 
@@ -1295,6 +1451,7 @@ func main() {
 	port := flag.String("port", "2222", "SSH server listen port")
 	hostKeyDir := flag.String("host-key-dir", ".ssh", "Directory for SSH host keys")
 	deviceFlag := flag.String("device-path", "", "Path to Rockbox device (auto-detect if empty)")
+	syncSourceFlag := flag.String("sync-source", "", "Source directory for music sync (e.g. /media/user/Player)")
 
 	flag.Parse()
 
@@ -1309,6 +1466,11 @@ func main() {
 			*deviceFlag = envPath
 		}
 	}
+	if *syncSourceFlag == "" {
+		if envPath := os.Getenv("ROCKBOX_SYNC_SOURCE"); envPath != "" {
+			*syncSourceFlag = envPath
+		}
+	}
 
 	if *serve {
 		StartServer(ServerConfig{
@@ -1316,6 +1478,7 @@ func main() {
 			Port:       *port,
 			HostKeyDir: *hostKeyDir,
 			DevicePath: *deviceFlag,
+			SyncSource: *syncSourceFlag,
 		})
 		return
 	}
@@ -1339,7 +1502,7 @@ func main() {
 		}
 	}
 
-	p := tea.NewProgram(initialModel(devicePath, playlistDir, musicDir), tea.WithAltScreen())
+	p := tea.NewProgram(initialModel(devicePath, playlistDir, musicDir, *syncSourceFlag), tea.WithAltScreen())
 	finalModel, err := p.Run()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to start: %v\n", err)

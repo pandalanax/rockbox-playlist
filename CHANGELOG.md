@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-03-14
+
+### Added
+- Music sync feature: press `s` on playlist picker to sync music from a source directory
+  - Runs rsync to copy new files from source to Rockbox Music folder
+  - One-way sync, no deletes (only adds new files)
+  - Detailed rsync output shown in TUI after completion
+  - Configure via `--sync-source` flag or `ROCKBOX_SYNC_SOURCE` env var
+  - Handles missing source with retry prompt (y/n)
+  - `s: sync` shortcut shown in help keys only when source is configured
+
 ## [0.4.0] - 2026-03-13
 
 ### Added
