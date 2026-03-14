@@ -25,8 +25,9 @@ type ServerConfig struct {
 	Host       string
 	Port       string
 	HostKeyDir string
-	DevicePath string // Base path to the Rockbox device (e.g. /Volumes/NO NAME)
-	SyncSource string // Source directory for music sync
+	DevicePath string    // Base path to the Rockbox device (e.g. /Volumes/NO NAME)
+	SyncSource string    // Source directory for music sync
+	AppCfg     AppConfig // Full app config to pass to sessions
 }
 
 // sessionGuard enforces single-session access.
@@ -69,10 +70,10 @@ func singleSessionMiddleware() wish.Middleware {
 }
 
 // makeTeaHandler creates a new Bubbletea model for each SSH session.
-func makeTeaHandler(devicePath, syncSource string) func(s ssh.Session) (tea.Model, []tea.ProgramOption) {
+func makeTeaHandler(cfg AppConfig, devicePath string) func(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 	return func(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 		pty, _, _ := s.Pty()
-		m := initialModelServe(devicePath, syncSource, pty.Window.Width, pty.Window.Height)
+		m := initialModelServe(cfg, devicePath, pty.Window.Width, pty.Window.Height)
 		return m, []tea.ProgramOption{tea.WithAltScreen()}
 	}
 }
@@ -91,7 +92,7 @@ func StartServer(cfg ServerConfig) {
 		wish.WithAddress(net.JoinHostPort(cfg.Host, cfg.Port)),
 		wish.WithHostKeyPath(hostKeyPath),
 		wish.WithMiddleware(
-			wishbt.Middleware(makeTeaHandler(cfg.DevicePath, cfg.SyncSource)),
+			wishbt.Middleware(makeTeaHandler(cfg.AppCfg, cfg.DevicePath)),
 			activeterm.Middleware(),
 			singleSessionMiddleware(),
 			logging.Middleware(),

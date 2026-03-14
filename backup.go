@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-const maxBackups = 10
-
 // getBackupDir returns the backup directory path (~/.rockbox-playlist/backups/)
 func getBackupDir() (string, error) {
 	home, err := os.UserHomeDir()
@@ -22,7 +20,7 @@ func getBackupDir() (string, error) {
 }
 
 // BackupPlaylists creates a transactional backup of all playlists and podcast config
-func BackupPlaylists(playlistDir, podcastConfigPath string) (string, error) {
+func BackupPlaylists(playlistDir, podcastConfigPath string, maxBackups int) (string, error) {
 	backupDir, err := getBackupDir()
 	if err != nil {
 		return "", err

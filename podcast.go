@@ -296,7 +296,7 @@ func DownloadEpisode(audioURL, destPath string, onProgress func(downloaded, tota
 }
 
 // UpdatePodcastWithLog updates a single podcast and returns detailed log messages
-func UpdatePodcastWithLog(name string, feed *PodcastFeed, audioDir string) (newCount int, deletedCount int, log []string, err error) {
+func UpdatePodcastWithLog(name string, feed *PodcastFeed, audioDir string, episodesToKeep int) (newCount int, deletedCount int, log []string, err error) {
 	folderName := SanitizeName(name)
 	podcastDir := filepath.Join(audioDir, folderName)
 
@@ -311,8 +311,8 @@ func UpdatePodcastWithLog(name string, feed *PodcastFeed, audioDir string) (newC
 		return 0, 0, log, err
 	}
 
-	// Get latest 3 episodes from RSS
-	rssEpisodes := ParseRSSEpisodes(rssFeed, 3)
+	// Get latest episodes from RSS
+	rssEpisodes := ParseRSSEpisodes(rssFeed, episodesToKeep)
 
 	// Build set of current files
 	currentFiles := make(map[string]bool)
@@ -378,7 +378,7 @@ func UpdatePodcastWithLog(name string, feed *PodcastFeed, audioDir string) (newC
 }
 
 // UpdatePodcast updates a single podcast, downloading new episodes and deleting old ones
-func UpdatePodcast(name string, feed *PodcastFeed, audioDir string, onProgress func(string)) (int, error) {
+func UpdatePodcast(name string, feed *PodcastFeed, audioDir string, episodesToKeep int, onProgress func(string)) (int, error) {
 	folderName := SanitizeName(name)
 	podcastDir := filepath.Join(audioDir, folderName)
 
@@ -397,8 +397,8 @@ func UpdatePodcast(name string, feed *PodcastFeed, audioDir string, onProgress f
 		return 0, err
 	}
 
-	// Get latest 3 episodes from RSS
-	rssEpisodes := ParseRSSEpisodes(rssFeed, 3)
+	// Get latest episodes from RSS
+	rssEpisodes := ParseRSSEpisodes(rssFeed, episodesToKeep)
 
 	// Build set of current files
 	currentFiles := make(map[string]bool)
@@ -468,10 +468,10 @@ func UpdatePodcast(name string, feed *PodcastFeed, audioDir string, onProgress f
 }
 
 // UpdateAllPodcasts updates all podcasts in the config
-func UpdateAllPodcasts(config PodcastConfig, audioDir string, onProgress func(string)) error {
+func UpdateAllPodcasts(config PodcastConfig, audioDir string, episodesToKeep int, onProgress func(string)) error {
 	for name := range config {
 		feed := config[name]
-		_, err := UpdatePodcast(name, &feed, audioDir, onProgress)
+		_, err := UpdatePodcast(name, &feed, audioDir, episodesToKeep, onProgress)
 		if err != nil {
 			if onProgress != nil {
 				onProgress(fmt.Sprintf("Error updating %s: %v", name, err))
@@ -485,7 +485,7 @@ func UpdateAllPodcasts(config PodcastConfig, audioDir string, onProgress func(st
 }
 
 // AddPodcastWithLog adds a new podcast and returns detailed log messages
-func AddPodcastWithLog(podcast iTunesPodcast, audioDir string, config PodcastConfig) (log []string, err error) {
+func AddPodcastWithLog(podcast iTunesPodcast, audioDir string, config PodcastConfig, episodesToKeep int) (log []string, err error) {
 	name := podcast.CollectionName
 	folderName := SanitizeName(name)
 	podcastDir := filepath.Join(audioDir, folderName)
@@ -506,8 +506,8 @@ func AddPodcastWithLog(podcast iTunesPodcast, audioDir string, config PodcastCon
 		return log, err
 	}
 
-	// Get latest 3 episodes
-	rssEpisodes := ParseRSSEpisodes(rssFeed, 3)
+	// Get latest episodes
+	rssEpisodes := ParseRSSEpisodes(rssFeed, episodesToKeep)
 
 	var episodes []Episode
 	downloadCount := 0
@@ -558,7 +558,7 @@ func AddPodcastWithLog(podcast iTunesPodcast, audioDir string, config PodcastCon
 }
 
 // AddPodcast adds a new podcast from an iTunes result
-func AddPodcast(podcast iTunesPodcast, audioDir string, config PodcastConfig, onProgress func(string)) error {
+func AddPodcast(podcast iTunesPodcast, audioDir string, config PodcastConfig, episodesToKeep int, onProgress func(string)) error {
 	name := podcast.CollectionName
 	folderName := SanitizeName(name)
 	podcastDir := filepath.Join(audioDir, folderName)
@@ -578,8 +578,8 @@ func AddPodcast(podcast iTunesPodcast, audioDir string, config PodcastConfig, on
 		return err
 	}
 
-	// Get latest 3 episodes
-	rssEpisodes := ParseRSSEpisodes(rssFeed, 3)
+	// Get latest episodes
+	rssEpisodes := ParseRSSEpisodes(rssFeed, episodesToKeep)
 
 	var episodes []Episode
 	for _, ep := range rssEpisodes {

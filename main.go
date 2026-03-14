@@ -180,6 +180,7 @@ func (i songItem) FilterValue() string { return i.song.DisplayName() }
 
 // Model is the main application state
 type Model struct {
+	appConfig        AppConfig
 	screen           screen
 	playlistDir      string
 	musicDir         string
@@ -261,7 +262,7 @@ type podcastAddDoneMsg struct {
 	summary string
 }
 
-func initialModel(devicePath, playlistDir, musicDir, syncSource string) Model {
+func initialModel(cfg AppConfig, devicePath, playlistDir, musicDir string) Model {
 	ti := textinput.New()
 	ti.Placeholder = "Type to search..."
 	ti.CharLimit = 100
@@ -278,20 +279,21 @@ func initialModel(devicePath, playlistDir, musicDir, syncSource string) Model {
 	deviceConnected := false
 	var podcastAudioDir, podcastConfigPath string
 
-	if devicePath != "" && CheckDevice(devicePath) {
+	if devicePath != "" && CheckDevice(devicePath, cfg.Device.MusicDir, cfg.Device.PlaylistDir) {
 		startScreen = screenLoading
 		deviceConnected = true
-		podcastAudioDir = filepath.Join(devicePath, "Audiobooks")
+		podcastAudioDir = filepath.Join(devicePath, cfg.Device.AudiobooksDir)
 		podcastConfigPath = filepath.Join(podcastAudioDir, "podcasts.json")
 	}
 
 	return Model{
+		appConfig:          cfg,
 		screen:             startScreen,
 		deviceConnected:    deviceConnected,
 		devicePath:         devicePath,
 		playlistDir:        playlistDir,
 		musicDir:           musicDir,
-		syncSource:         syncSource,
+		syncSource:         cfg.Sync.Source,
 		selectedSongs:      make(map[string]bool),
 		existingEntries:    make(map[string]bool),
 		searchInput:        ti,
@@ -306,23 +308,23 @@ func initialModel(devicePath, playlistDir, musicDir, syncSource string) Model {
 
 // initialModelServe creates a Model for SSH serve mode.
 // Starts on the no-device screen if device is not connected, otherwise loads immediately.
-func initialModelServe(devicePath, syncSource string, width, height int) Model {
+func initialModelServe(cfg AppConfig, devicePath string, width, height int) Model {
 	playlistDir := ""
 	musicDir := ""
-	if devicePath != "" && CheckDevice(devicePath) {
-		playlistDir = filepath.Join(devicePath, "Playlists")
-		musicDir = filepath.Join(devicePath, "Music")
+	if devicePath != "" && CheckDevice(devicePath, cfg.Device.MusicDir, cfg.Device.PlaylistDir) {
+		playlistDir = filepath.Join(devicePath, cfg.Device.PlaylistDir)
+		musicDir = filepath.Join(devicePath, cfg.Device.MusicDir)
 	} else if devicePath == "" {
 		// Auto-detect
-		found := FindDevicePath()
+		found := FindDevicePath(cfg.Device.SearchPaths, cfg.Device.MusicDir, cfg.Device.PlaylistDir)
 		if found != "" {
 			devicePath = found
-			playlistDir = filepath.Join(found, "Playlists")
-			musicDir = filepath.Join(found, "Music")
+			playlistDir = filepath.Join(found, cfg.Device.PlaylistDir)
+			musicDir = filepath.Join(found, cfg.Device.MusicDir)
 		}
 	}
 
-	m := initialModel(devicePath, playlistDir, musicDir, syncSource)
+	m := initialModel(cfg, devicePath, playlistDir, musicDir)
 	m.width = width
 	m.height = height
 	return m
@@ -330,7 +332,7 @@ func initialModelServe(devicePath, syncSource string, width, height int) Model {
 
 func (m Model) Init() tea.Cmd {
 	if m.screen == screenNoDevice {
-		return WatchForDevice(m.devicePath)
+		return WatchForDevice(m.devicePath, m.appConfig.Device.SearchPaths)
 	}
 	return tea.Batch(
 		loadPlaylists(m.playlistDir),
@@ -358,8 +360,8 @@ func loadSongs(dir string) tea.Cmd {
 	}
 }
 
-func scheduleMusicRescan() tea.Cmd {
-	return tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
+func scheduleMusicRescan(interval time.Duration) tea.Cmd {
+	return tea.Tick(interval, func(t time.Time) tea.Msg {
 		return musicRescanMsg{}
 	})
 }
@@ -418,7 +420,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.filterSongs()
 		}
 		// Schedule the next background re-scan
-		return m, scheduleMusicRescan()
+		return m, scheduleMusicRescan(m.appConfig.RescanDuration())
 
 	case musicRescanMsg:
 		// Only re-scan if device is connected
@@ -476,9 +478,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.connected {
 			m.deviceConnected = true
 			m.devicePath = msg.path
-			m.playlistDir = filepath.Join(msg.path, "Playlists")
-			m.musicDir = filepath.Join(msg.path, "Music")
-			m.podcastAudioDir = filepath.Join(msg.path, "Audiobooks")
+			m.playlistDir = filepath.Join(msg.path, m.appConfig.Device.PlaylistDir)
+			m.musicDir = filepath.Join(msg.path, m.appConfig.Device.MusicDir)
+			m.podcastAudioDir = filepath.Join(msg.path, m.appConfig.Device.AudiobooksDir)
 			m.podcastConfigPath = filepath.Join(m.podcastAudioDir, "podcasts.json")
 			m.screen = screenLoading
 			m.songsLoaded = false
@@ -489,7 +491,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			)
 		}
 		// Device not found yet, keep polling
-		return m, WatchForDevice(m.devicePath)
+		return m, WatchForDevice(m.devicePath, m.appConfig.Device.SearchPaths)
 
 	case deviceEjectMsg:
 		if msg.err != nil {
@@ -510,7 +512,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.selectedOrder = nil
 		m.screen = screenNoDevice
 		m.message = ""
-		return m, WatchForDevice(m.devicePath)
+		return m, WatchForDevice(m.devicePath, m.appConfig.Device.SearchPaths)
 
 	case tea.KeyMsg:
 		// Global quit
@@ -592,8 +594,9 @@ func (m *Model) setupPlaylistList() {
 func (m Model) startBackup() tea.Cmd {
 	playlistDir := m.playlistDir
 	podcastConfigPath := m.podcastConfigPath
+	maxBackups := m.appConfig.Backup.MaxBackups
 	return func() tea.Msg {
-		summary, err := BackupPlaylists(playlistDir, podcastConfigPath)
+		summary, err := BackupPlaylists(playlistDir, podcastConfigPath, maxBackups)
 		return backupDoneMsg{err: err, summary: summary}
 	}
 }
@@ -937,6 +940,7 @@ func (m Model) startPodcastUpdate() tea.Cmd {
 	audioDir := m.podcastAudioDir
 	configPath := m.podcastConfigPath
 	playlistPath := m.selectedPlaylist.Path
+	episodesToKeep := m.appConfig.Podcast.EpisodesToKeep
 
 	return func() tea.Msg {
 		var log []string
@@ -951,7 +955,7 @@ func (m Model) startPodcastUpdate() tea.Cmd {
 			feed := config[name]
 			log = append(log, fmt.Sprintf("Checking %s...", name))
 
-			newCount, deletedCount, msgs, err := UpdatePodcastWithLog(name, &feed, audioDir)
+			newCount, deletedCount, msgs, err := UpdatePodcastWithLog(name, &feed, audioDir, episodesToKeep)
 			log = append(log, msgs...)
 
 			if err != nil {
@@ -1077,9 +1081,10 @@ func (m Model) addSelectedPodcast() tea.Cmd {
 	audioDir := m.podcastAudioDir
 	configPath := m.podcastConfigPath
 	playlistPath := m.selectedPlaylist.Path
+	episodesToKeep := m.appConfig.Podcast.EpisodesToKeep
 
 	return func() tea.Msg {
-		log, err := AddPodcastWithLog(podcast, audioDir, config)
+		log, err := AddPodcastWithLog(podcast, audioDir, config, episodesToKeep)
 
 		if err != nil {
 			return podcastAddDoneMsg{err: err, summary: strings.Join(log, "\n")}
@@ -1445,40 +1450,45 @@ func (m Model) viewPodcastAdding() string {
 }
 
 func main() {
-	// Flags
+	// Load config file (defaults if not found)
+	cfg := LoadConfig()
+
+	// Flags (defaults come from config)
 	serve := flag.Bool("serve", false, "Run as SSH server")
-	host := flag.String("host", "0.0.0.0", "SSH server listen address")
-	port := flag.String("port", "2222", "SSH server listen port")
-	hostKeyDir := flag.String("host-key-dir", ".ssh", "Directory for SSH host keys")
-	deviceFlag := flag.String("device-path", "", "Path to Rockbox device (auto-detect if empty)")
-	syncSourceFlag := flag.String("sync-source", "", "Source directory for music sync (e.g. /media/user/Player)")
+	host := flag.String("host", cfg.Server.Host, "SSH server listen address")
+	port := flag.String("port", cfg.Server.Port, "SSH server listen port")
+	hostKeyDir := flag.String("host-key-dir", cfg.Server.HostKeyDir, "Directory for SSH host keys")
+	deviceFlag := flag.String("device-path", cfg.Device.Path, "Path to Rockbox device (auto-detect if empty)")
+	syncSourceFlag := flag.String("sync-source", cfg.Sync.Source, "Source directory for music sync (e.g. /media/user/Player)")
 
 	flag.Parse()
 
-	// Check env vars as fallbacks
-	if *port == "2222" {
-		if envPort := os.Getenv("ROCKBOX_SSH_PORT"); envPort != "" {
-			*port = envPort
-		}
+	// Environment variable overrides (only if flag wasn't explicitly set)
+	if envPort := os.Getenv("ROCKBOX_SSH_PORT"); envPort != "" && *port == cfg.Server.Port {
+		*port = envPort
 	}
-	if *deviceFlag == "" {
-		if envPath := os.Getenv("ROCKBOX_DEVICE_PATH"); envPath != "" {
-			*deviceFlag = envPath
-		}
+	if envPath := os.Getenv("ROCKBOX_DEVICE_PATH"); envPath != "" && *deviceFlag == cfg.Device.Path {
+		*deviceFlag = envPath
 	}
-	if *syncSourceFlag == "" {
-		if envPath := os.Getenv("ROCKBOX_SYNC_SOURCE"); envPath != "" {
-			*syncSourceFlag = envPath
-		}
+	if envPath := os.Getenv("ROCKBOX_SYNC_SOURCE"); envPath != "" && *syncSourceFlag == cfg.Sync.Source {
+		*syncSourceFlag = envPath
 	}
+
+	// Apply resolved values back into config
+	cfg.Server.Host = *host
+	cfg.Server.Port = *port
+	cfg.Server.HostKeyDir = *hostKeyDir
+	cfg.Device.Path = *deviceFlag
+	cfg.Sync.Source = *syncSourceFlag
 
 	if *serve {
 		StartServer(ServerConfig{
-			Host:       *host,
-			Port:       *port,
-			HostKeyDir: *hostKeyDir,
-			DevicePath: *deviceFlag,
-			SyncSource: *syncSourceFlag,
+			Host:       cfg.Server.Host,
+			Port:       cfg.Server.Port,
+			HostKeyDir: cfg.Server.HostKeyDir,
+			DevicePath: cfg.Device.Path,
+			SyncSource: cfg.Sync.Source,
+			AppCfg:     cfg,
 		})
 		return
 	}
@@ -1493,16 +1503,21 @@ func main() {
 		musicDir, _ = filepath.Abs(args[1])
 		// Derive device path from playlist dir parent
 		devicePath = filepath.Dir(playlistDir)
+	} else if cfg.Device.Path != "" {
+		// From config/flag/env
+		devicePath = cfg.Device.Path
+		playlistDir = filepath.Join(devicePath, cfg.Device.PlaylistDir)
+		musicDir = filepath.Join(devicePath, cfg.Device.MusicDir)
 	} else {
 		// Auto-detect device
-		devicePath = FindDevicePath()
+		devicePath = FindDevicePath(cfg.Device.SearchPaths, cfg.Device.MusicDir, cfg.Device.PlaylistDir)
 		if devicePath != "" {
-			playlistDir = filepath.Join(devicePath, "Playlists")
-			musicDir = filepath.Join(devicePath, "Music")
+			playlistDir = filepath.Join(devicePath, cfg.Device.PlaylistDir)
+			musicDir = filepath.Join(devicePath, cfg.Device.MusicDir)
 		}
 	}
 
-	p := tea.NewProgram(initialModel(devicePath, playlistDir, musicDir, *syncSourceFlag), tea.WithAltScreen())
+	p := tea.NewProgram(initialModel(cfg, devicePath, playlistDir, musicDir), tea.WithAltScreen())
 	finalModel, err := p.Run()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to start: %v\n", err)

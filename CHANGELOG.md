@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-03-14
+
+### Added
+- Configuration file support: `~/.config/rockbox-playlist/config.toml`
+  - All paths and settings now configurable via TOML config file
+  - Precedence: CLI flags > environment variables > config file > built-in defaults
+  - Respects `$XDG_CONFIG_HOME` if set
+  - Uses built-in defaults silently if no config file exists
+- Configurable settings:
+  - `device.path`: explicit device mount path
+  - `device.search_paths`: paths to scan during auto-detect
+  - `device.playlist_dir`, `music_dir`, `audiobooks_dir`: directory names on device
+  - `sync.source`: source directory for music sync
+  - `music.rescan_interval`: how often to rescan music library (e.g. "5s", "10s", "1m")
+  - `backup.max_backups`: number of backups to keep
+  - `podcast.episodes_to_keep`: episodes per podcast
+  - `server.host`, `port`, `host_key_dir`: SSH server settings
+
+### Changed
+- Previously hardcoded values (rescan interval, max backups, episodes to keep, search paths, directory names) are now read from config
+- CLI flag defaults are populated from config file values
+
 ## [0.5.0] - 2026-03-14
 
 ### Added
