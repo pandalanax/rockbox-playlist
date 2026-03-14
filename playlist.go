@@ -30,6 +30,10 @@ func LoadPlaylists(playlistDir string) ([]Playlist, error) {
 		}
 
 		name := entry.Name()
+		// Skip macOS resource fork files
+		if strings.HasPrefix(name, "._") {
+			continue
+		}
 		ext := strings.ToLower(filepath.Ext(name))
 		if ext != ".m3u8" && ext != ".m3u" {
 			continue
@@ -94,7 +98,7 @@ func AppendToPlaylist(playlistPath string, entries []string) error {
 
 // NormalizePath normalizes a path for comparison (removes ../ prefix variations)
 func NormalizePath(path string) string {
-	// Remove leading ../ or ./ 
+	// Remove leading ../ or ./
 	path = strings.TrimPrefix(path, "../")
 	path = strings.TrimPrefix(path, "./")
 	return path

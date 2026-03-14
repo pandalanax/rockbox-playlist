@@ -26,6 +26,8 @@ const (
 	screenSongBrowser
 	screenConfirmation
 	screenDone
+	// Playlist creation
+	screenCreatePlaylist
 	// Sync screens
 	screenSyncConfirm
 	screenSync
@@ -206,6 +208,10 @@ type Model struct {
 	devicePath      string // Base mount path, e.g. /Volumes/NO NAME
 	confirmEject    bool   // Whether eject confirmation overlay is showing
 
+	// Playlist creation/deletion
+	createPlaylistInput textinput.Model
+	confirmDelete       bool // Whether delete confirmation overlay is showing
+
 	// Sync fields
 	syncSource         string   // Source directory for music sync
 	syncInProgress     bool     // Whether sync is running
@@ -278,6 +284,12 @@ func initialModel(cfg AppConfig, devicePath, playlistDir, musicDir string) Model
 	podcastTi.CharLimit = 100
 	podcastTi.Width = 40
 
+	// Playlist creation input
+	createTi := textinput.New()
+	createTi.Placeholder = "Playlist name..."
+	createTi.CharLimit = 50
+	createTi.Width = 40
+
 	// Determine initial screen based on device presence
 	startScreen := screenNoDevice
 	deviceConnected := false
@@ -291,22 +303,23 @@ func initialModel(cfg AppConfig, devicePath, playlistDir, musicDir string) Model
 	}
 
 	return Model{
-		appConfig:          cfg,
-		screen:             startScreen,
-		deviceConnected:    deviceConnected,
-		devicePath:         devicePath,
-		playlistDir:        playlistDir,
-		musicDir:           musicDir,
-		syncSource:         cfg.Sync.Source,
-		selectedSongs:      make(map[string]bool),
-		existingEntries:    make(map[string]bool),
-		searchInput:        ti,
-		width:              80,
-		height:             24,
-		podcastSearchInput: podcastTi,
-		podcastAudioDir:    podcastAudioDir,
-		podcastConfigPath:  podcastConfigPath,
-		podcastConfig:      make(PodcastConfig),
+		appConfig:           cfg,
+		screen:              startScreen,
+		deviceConnected:     deviceConnected,
+		devicePath:          devicePath,
+		playlistDir:         playlistDir,
+		musicDir:            musicDir,
+		syncSource:          cfg.Sync.Source,
+		selectedSongs:       make(map[string]bool),
+		existingEntries:     make(map[string]bool),
+		searchInput:         ti,
+		createPlaylistInput: createTi,
+		width:               80,
+		height:              24,
+		podcastSearchInput:  podcastTi,
+		podcastAudioDir:     podcastAudioDir,
+		podcastConfigPath:   podcastConfigPath,
+		podcastConfig:       make(PodcastConfig),
 	}
 }
 
@@ -551,6 +564,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateSongBrowser(msg)
 		case screenConfirmation:
 			return m.updateConfirmation(msg)
+		case screenCreatePlaylist:
+			return m.updateCreatePlaylist(msg)
 		case screenSyncConfirm:
 			return m.updateSyncConfirm(msg)
 		case screenSync:
@@ -598,6 +613,8 @@ func (m *Model) setupPlaylistList() {
 	syncSource := m.syncSource
 	m.playlistList.AdditionalShortHelpKeys = func() []key.Binding {
 		bindings := []key.Binding{
+			key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "create")),
+			key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete")),
 			key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "backup")),
 			key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "eject")),
 		}
@@ -632,16 +649,53 @@ func (m Model) updatePlaylistPicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Handle delete confirmation overlay
+	if m.confirmDelete {
+		switch {
+		case key.Matches(msg, keys.Yes):
+			m.confirmDelete = false
+			if item, ok := m.playlistList.SelectedItem().(playlistItem); ok {
+				if err := os.Remove(item.playlist.Path); err != nil {
+					m.message = fmt.Sprintf("Error: %v", err)
+				} else {
+					m.message = fmt.Sprintf("Deleted %s", item.playlist.Name)
+				}
+				return m, tea.Batch(
+					loadPlaylists(m.playlistDir),
+					tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+						return toastDismissMsg{}
+					}),
+				)
+			}
+			return m, nil
+		case key.Matches(msg, keys.No), key.Matches(msg, keys.Back):
+			m.confirmDelete = false
+			return m, nil
+		}
+		return m, nil
+	}
+
 	switch {
 	case key.Matches(msg, keys.Quit):
 		return m, tea.Quit
 	case msg.String() == "u" && m.playlistList.FilterState() == list.Unfiltered:
 		m.confirmEject = true
 		return m, nil
+	case msg.String() == "d" && m.playlistList.FilterState() == list.Unfiltered:
+		// Only allow delete if a playlist is selected
+		if _, ok := m.playlistList.SelectedItem().(playlistItem); ok {
+			m.confirmDelete = true
+		}
+		return m, nil
 	case msg.String() == "s" && m.playlistList.FilterState() == list.Unfiltered:
 		return m.handleSyncKey()
 	case msg.String() == "b" && m.playlistList.FilterState() == list.Unfiltered:
 		return m, m.startBackup()
+	case msg.String() == "c" && m.playlistList.FilterState() == list.Unfiltered:
+		m.createPlaylistInput.Reset()
+		m.createPlaylistInput.Focus()
+		m.screen = screenCreatePlaylist
+		return m, textinput.Blink
 	case msg.Type == tea.KeyEnter:
 		if item, ok := m.playlistList.SelectedItem().(playlistItem); ok {
 			m.selectedPlaylist = &item.playlist
@@ -830,6 +884,65 @@ func (m Model) updateConfirmation(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+func (m Model) updateCreatePlaylist(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyCtrlC:
+		return m, tea.Quit
+	case tea.KeyEsc:
+		m.screen = screenPlaylistPicker
+		return m, nil
+	case tea.KeyEnter:
+		name := strings.TrimSpace(m.createPlaylistInput.Value())
+		if name == "" {
+			return m, nil
+		}
+		// Create the playlist file
+		playlistPath := filepath.Join(m.playlistDir, name+".m3u8")
+		// Check if already exists
+		if _, err := os.Stat(playlistPath); err == nil {
+			m.message = "Playlist already exists"
+			return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+				return toastDismissMsg{}
+			})
+		}
+		// Create empty file
+		f, err := os.Create(playlistPath)
+		if err != nil {
+			m.message = fmt.Sprintf("Error: %v", err)
+			return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+				return toastDismissMsg{}
+			})
+		}
+		f.Close()
+		// Reload playlists and go back
+		m.screen = screenPlaylistPicker
+		m.message = fmt.Sprintf("Created %s", name)
+		return m, tea.Batch(
+			loadPlaylists(m.playlistDir),
+			tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+				return toastDismissMsg{}
+			}),
+		)
+	}
+	// Update the text input
+	var cmd tea.Cmd
+	m.createPlaylistInput, cmd = m.createPlaylistInput.Update(msg)
+	return m, cmd
+}
+
+func (m Model) viewCreatePlaylist() string {
+	var b strings.Builder
+
+	b.WriteString(titleStyle.Render("Create New Playlist"))
+	b.WriteString("\n\n")
+	b.WriteString(m.createPlaylistInput.View())
+	b.WriteString("\n\n")
+	b.WriteString(statusBarStyle.Render("Enter to create, Esc to cancel"))
+
+	content := b.String()
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
 }
 
 // handleSyncKey handles pressing 's' on the playlist picker.
@@ -1192,6 +1305,8 @@ func (m Model) View() string {
 		return m.viewSongBrowser()
 	case screenConfirmation:
 		return m.viewConfirmation()
+	case screenCreatePlaylist:
+		return m.viewCreatePlaylist()
 	case screenSyncConfirm:
 		return m.viewSyncConfirm()
 	case screenSync:
@@ -1245,6 +1360,13 @@ func (m Model) viewPlaylistPicker() string {
 	if m.confirmEject {
 		toast := ejectConfirmStyle.Render("Eject player? (y/n)")
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, toast)
+	}
+
+	if m.confirmDelete {
+		if item, ok := m.playlistList.SelectedItem().(playlistItem); ok {
+			toast := ejectConfirmStyle.Render(fmt.Sprintf("Delete %s? (y/n)", item.playlist.Name))
+			return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, toast)
+		}
 	}
 
 	if m.message != "" {
