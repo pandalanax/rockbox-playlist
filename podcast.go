@@ -377,6 +377,167 @@ func UpdatePodcastWithLog(name string, feed *PodcastFeed, audioDir string, episo
 	return newCount, deletedCount, log, nil
 }
 
+// PendingEpisode represents an episode that would be downloaded during a podcast update
+type PendingEpisode struct {
+	PodcastName string
+	Title       string
+	URL         string
+	DestPath    string
+	Date        string
+}
+
+// PendingDelete represents an episode that would be deleted during a podcast update
+type PendingDelete struct {
+	PodcastName string
+	File        string
+	Path        string
+}
+
+// PodcastCheckResult holds the dry-run results for all podcasts
+type PodcastCheckResult struct {
+	Downloads []PendingEpisode
+	Deletes   []PendingDelete
+	Errors    []string // per-podcast errors (non-fatal, we continue checking others)
+}
+
+// CheckPodcastUpdates performs a dry-run: fetches RSS feeds and determines what
+// episodes would be downloaded and deleted, without actually doing anything.
+func CheckPodcastUpdates(config PodcastConfig, audioDir string, episodesToKeep int) PodcastCheckResult {
+	var result PodcastCheckResult
+
+	for name := range config {
+		feed := config[name]
+		folderName := SanitizeName(name)
+		podcastDir := filepath.Join(audioDir, folderName)
+
+		// Fetch RSS
+		rssFeed, err := FetchRSSFeed(feed.FeedURL)
+		if err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", name, err))
+			continue
+		}
+
+		// Get latest episodes from RSS
+		rssEpisodes := ParseRSSEpisodes(rssFeed, episodesToKeep)
+
+		// Check which episodes are new (not on disk)
+		for _, ep := range rssEpisodes {
+			ext := GetFileExtension(ep.URL)
+			filename := SanitizeName(folderName+"-"+ep.Title) + ext
+			epPath := filepath.Join(podcastDir, filename)
+			dateStr := ep.PubDate.Format("2006-01-02")
+
+			if _, statErr := os.Stat(epPath); statErr != nil {
+				// File doesn't exist — this is a new episode
+				result.Downloads = append(result.Downloads, PendingEpisode{
+					PodcastName: name,
+					Title:       ep.Title,
+					URL:         ep.URL,
+					DestPath:    epPath,
+					Date:        dateStr,
+				})
+			}
+		}
+
+		// Check which episodes would be deleted
+		filesToKeep := make(map[string]bool)
+		for _, ep := range rssEpisodes {
+			ext := GetFileExtension(ep.URL)
+			filename := SanitizeName(folderName+"-"+ep.Title) + ext
+			filesToKeep[filename] = true
+		}
+
+		for _, ep := range feed.Episodes {
+			if !filesToKeep[ep.File] {
+				oldPath := filepath.Join(podcastDir, ep.File)
+				if _, statErr := os.Stat(oldPath); statErr == nil {
+					result.Deletes = append(result.Deletes, PendingDelete{
+						PodcastName: name,
+						File:        ep.File,
+						Path:        oldPath,
+					})
+				}
+			}
+		}
+	}
+
+	return result
+}
+
+// ExecutePodcastUpdates downloads new episodes and deletes old ones based on a check result.
+// It also updates the config and rebuilds the playlist.
+func ExecutePodcastUpdates(result PodcastCheckResult, config PodcastConfig, audioDir string, configPath string, playlistPath string, episodesToKeep int) (downloaded int, deleted int, err error) {
+	// Download new episodes
+	for _, ep := range result.Downloads {
+		folderName := SanitizeName(ep.PodcastName)
+		podcastDir := filepath.Join(audioDir, folderName)
+
+		// Ensure folder exists
+		if mkErr := os.MkdirAll(podcastDir, 0755); mkErr != nil {
+			return downloaded, deleted, fmt.Errorf("could not create folder for %s: %w", ep.PodcastName, mkErr)
+		}
+
+		if dlErr := DownloadEpisode(ep.URL, ep.DestPath, nil); dlErr != nil {
+			return downloaded, deleted, fmt.Errorf("downloading %s - %s: %w", ep.PodcastName, ep.Title, dlErr)
+		}
+		downloaded++
+	}
+
+	// Delete old episodes
+	for _, del := range result.Deletes {
+		os.Remove(del.Path)
+		deleted++
+	}
+
+	// Re-fetch and rebuild episode lists in config (since we downloaded new files)
+	for name := range config {
+		feed := config[name]
+		folderName := SanitizeName(name)
+		podcastDir := filepath.Join(audioDir, folderName)
+
+		rssFeed, err := FetchRSSFeed(feed.FeedURL)
+		if err != nil {
+			continue // skip on error, config stays as-is
+		}
+		rssEpisodes := ParseRSSEpisodes(rssFeed, episodesToKeep)
+
+		var newEpisodes []Episode
+		for _, ep := range rssEpisodes {
+			ext := GetFileExtension(ep.URL)
+			filename := SanitizeName(folderName+"-"+ep.Title) + ext
+			epPath := filepath.Join(podcastDir, filename)
+			dateStr := ep.PubDate.Format("2006-01-02")
+
+			// Only include if file actually exists on disk
+			if _, statErr := os.Stat(epPath); statErr == nil {
+				newEpisodes = append(newEpisodes, Episode{
+					File: filename,
+					Date: dateStr,
+				})
+			}
+		}
+
+		sort.Slice(newEpisodes, func(i, j int) bool {
+			return newEpisodes[i].Date > newEpisodes[j].Date
+		})
+
+		feed.Episodes = newEpisodes
+		config[name] = feed
+	}
+
+	// Save config
+	if err := SavePodcastConfig(configPath, config); err != nil {
+		return downloaded, deleted, err
+	}
+
+	// Rebuild playlist
+	if err := RebuildPodcastPlaylist(config, playlistPath, audioDir); err != nil {
+		return downloaded, deleted, err
+	}
+
+	return downloaded, deleted, nil
+}
+
 // UpdatePodcast updates a single podcast, downloading new episodes and deleting old ones
 func UpdatePodcast(name string, feed *PodcastFeed, audioDir string, episodesToKeep int, onProgress func(string)) (int, error) {
 	folderName := SanitizeName(name)

@@ -210,16 +210,22 @@ type Model struct {
 	syncError          string   // Error message if sync failed
 
 	// Podcast fields
-	podcastConfig      PodcastConfig
-	podcastAudioDir    string // e.g. /Volumes/NO NAME/Audiobooks
-	podcastConfigPath  string // e.g. /Volumes/NO NAME/Audiobooks/podcasts.json
-	podcastMenuIndex   int    // Selected menu item (0-3)
-	podcastSearchInput textinput.Model
-	podcastResults     []iTunesPodcast
-	podcastResultIndex int
-	podcastProgress    string   // Current progress message
-	podcastLog         []string // Log of progress messages
-	podcastUpdating    bool     // Whether update is in progress
+	podcastConfig         PodcastConfig
+	podcastAudioDir       string // e.g. /Volumes/NO NAME/Audiobooks
+	podcastConfigPath     string // e.g. /Volumes/NO NAME/Audiobooks/podcasts.json
+	podcastMenuIndex      int    // Selected menu item (0-3)
+	podcastSearchInput    textinput.Model
+	podcastResults        []iTunesPodcast
+	podcastResultIndex    int
+	podcastProgress       string              // Current progress message (used by add screen)
+	podcastLog            []string            // Log of progress messages
+	podcastUpdating       bool                // Whether update/check is in progress
+	podcastCheckResult    *PodcastCheckResult // Result from dry-run check
+	podcastConfirmPending bool                // Waiting for y/n after check
+	podcastUpdateComplete bool                // Download phase finished
+	podcastDownloaded     int                 // Number of episodes downloaded
+	podcastDeleted        int                 // Number of episodes deleted
+	podcastUpdateError    string              // Error during download phase
 }
 
 // Messages
@@ -245,10 +251,14 @@ type backupDoneMsg struct {
 }
 
 // Podcast messages
-type podcastUpdateProgressMsg struct{ message string }
+type podcastCheckDoneMsg struct {
+	err    error
+	result PodcastCheckResult
+}
 type podcastUpdateDoneMsg struct {
-	err     error
-	summary string
+	err        error
+	downloaded int
+	deleted    int
 }
 type podcastSearchResultsMsg struct {
 	results []iTunesPodcast
@@ -434,14 +444,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case podcastUpdateDoneMsg:
+	case podcastCheckDoneMsg:
 		m.podcastUpdating = false
 		if msg.err != nil {
-			m.podcastProgress = fmt.Sprintf("Error: %v\n\n%s", msg.err, msg.summary)
+			m.podcastUpdateError = msg.err.Error()
 		} else {
-			m.podcastProgress = msg.summary
+			result := msg.result
+			m.podcastCheckResult = &result
+			if len(result.Downloads) > 0 || len(result.Deletes) > 0 {
+				m.podcastConfirmPending = true
+			}
 		}
-		// Stay on update screen to show results, user presses key to continue
+		return m, nil
+
+	case podcastUpdateDoneMsg:
+		m.podcastUpdating = false
+		m.podcastUpdateComplete = true
+		m.podcastDownloaded = msg.downloaded
+		m.podcastDeleted = msg.deleted
+		if msg.err != nil {
+			m.podcastUpdateError = msg.err.Error()
+		}
+		// Reload config after update
+		config, err := LoadPodcastConfig(m.podcastConfigPath)
+		if err == nil {
+			m.podcastConfig = config
+		}
 		return m, nil
 
 	case podcastSearchResultsMsg:
@@ -1029,9 +1057,14 @@ func (m Model) updatePodcastMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch m.podcastMenuIndex {
 		case 0: // Update all podcasts
 			m.screen = screenPodcastUpdate
-			m.podcastProgress = ""
 			m.podcastUpdating = true
-			return m, m.startPodcastUpdate()
+			m.podcastCheckResult = nil
+			m.podcastConfirmPending = false
+			m.podcastUpdateComplete = false
+			m.podcastDownloaded = 0
+			m.podcastDeleted = 0
+			m.podcastUpdateError = ""
+			return m, m.startPodcastCheck()
 		case 1: // Add new podcast
 			m.screen = screenPodcastSearch
 			m.podcastSearchInput.SetValue("")
@@ -1062,7 +1095,23 @@ func (m Model) updatePodcastMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) startPodcastUpdate() tea.Cmd {
+func (m Model) startPodcastCheck() tea.Cmd {
+	config := m.podcastConfig
+	audioDir := m.podcastAudioDir
+	episodesToKeep := m.appConfig.Podcast.EpisodesToKeep
+
+	return func() tea.Msg {
+		if len(config) == 0 {
+			return podcastCheckDoneMsg{result: PodcastCheckResult{}}
+		}
+
+		result := CheckPodcastUpdates(config, audioDir, episodesToKeep)
+		return podcastCheckDoneMsg{result: result}
+	}
+}
+
+func (m Model) startPodcastDownload() tea.Cmd {
+	checkResult := m.podcastCheckResult
 	config := m.podcastConfig
 	audioDir := m.podcastAudioDir
 	configPath := m.podcastConfigPath
@@ -1070,58 +1119,8 @@ func (m Model) startPodcastUpdate() tea.Cmd {
 	episodesToKeep := m.appConfig.Podcast.EpisodesToKeep
 
 	return func() tea.Msg {
-		var log []string
-		totalNew := 0
-		totalDeleted := 0
-
-		if len(config) == 0 {
-			return podcastUpdateDoneMsg{err: nil, summary: "No podcasts subscribed"}
-		}
-
-		for name := range config {
-			feed := config[name]
-			log = append(log, fmt.Sprintf("Checking %s...", name))
-
-			newCount, deletedCount, msgs, err := UpdatePodcastWithLog(name, &feed, audioDir, episodesToKeep)
-			log = append(log, msgs...)
-
-			if err != nil {
-				log = append(log, fmt.Sprintf("  Error: %v", err))
-				continue
-			}
-
-			config[name] = feed
-			totalNew += newCount
-			totalDeleted += deletedCount
-
-			if newCount == 0 {
-				log = append(log, "  No new episodes")
-			} else if newCount == 1 {
-				log = append(log, "  1 new episode downloaded")
-			} else {
-				log = append(log, fmt.Sprintf("  %d new episodes downloaded", newCount))
-			}
-		}
-
-		// Save config
-		if err := SavePodcastConfig(configPath, config); err != nil {
-			return podcastUpdateDoneMsg{err: err, summary: strings.Join(log, "\n")}
-		}
-
-		// Rebuild playlist
-		if err := RebuildPodcastPlaylist(config, playlistPath, audioDir); err != nil {
-			return podcastUpdateDoneMsg{err: err, summary: strings.Join(log, "\n")}
-		}
-
-		log = append(log, "")
-		log = append(log, "Done!")
-
-		summary := fmt.Sprintf("Downloaded %d new episodes", totalNew)
-		if totalDeleted > 0 {
-			summary += fmt.Sprintf(", deleted %d old", totalDeleted)
-		}
-
-		return podcastUpdateDoneMsg{err: nil, summary: strings.Join(log, "\n")}
+		downloaded, deleted, err := ExecutePodcastUpdates(*checkResult, config, audioDir, configPath, playlistPath, episodesToKeep)
+		return podcastUpdateDoneMsg{err: err, downloaded: downloaded, deleted: deleted}
 	}
 }
 
@@ -1129,17 +1128,37 @@ func (m Model) updatePodcastUpdate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyCtrlC:
 		return m, tea.Quit
-	case tea.KeyEsc, tea.KeyEnter:
-		// Only allow exit if update is complete
-		if !m.podcastUpdating {
+	}
+
+	// If update/check is in progress, ignore all keys
+	if m.podcastUpdating {
+		return m, nil
+	}
+
+	// If waiting for confirmation after check
+	if m.podcastConfirmPending {
+		switch {
+		case key.Matches(msg, keys.Yes):
+			// Start actual download
+			m.podcastUpdating = true
+			m.podcastConfirmPending = false
+			return m, m.startPodcastDownload()
+		case key.Matches(msg, keys.No), key.Matches(msg, keys.Back):
 			m.screen = screenPodcastMenu
-			m.podcastProgress = ""
-			// Reload config since it may have been updated
-			config, err := LoadPodcastConfig(m.podcastConfigPath)
-			if err == nil {
-				m.podcastConfig = config
-			}
+			m.podcastCheckResult = nil
+			m.podcastConfirmPending = false
+			return m, nil
 		}
+		return m, nil
+	}
+
+	// Update complete or nothing new — any key exits
+	switch msg.Type {
+	case tea.KeyEsc, tea.KeyEnter:
+		m.screen = screenPodcastMenu
+		m.podcastCheckResult = nil
+		m.podcastUpdateComplete = false
+		m.podcastUpdateError = ""
 		return m, nil
 	}
 	return m, nil
@@ -1530,14 +1549,135 @@ func (m Model) viewPodcastUpdate() string {
 	var b strings.Builder
 
 	b.WriteString(podcastTitleStyle.Render("Updating Podcasts"))
-	b.WriteString("\n")
+	b.WriteString("\n\n")
 
 	if m.podcastUpdating {
-		b.WriteString(podcastProgressStyle.Render("Updating podcasts, please wait..."))
+		if m.podcastConfirmPending || m.podcastCheckResult == nil {
+			// Phase 1: checking RSS feeds
+			b.WriteString(podcastProgressStyle.Render("Checking for new episodes..."))
+		} else {
+			// Phase 2: downloading
+			b.WriteString(podcastProgressStyle.Render("Downloading, please wait..."))
+		}
 		b.WriteString("\n\n")
 		b.WriteString(statusBarStyle.Render("This may take a while..."))
+	} else if m.podcastUpdateError != "" {
+		b.WriteString(podcastProgressStyle.Render("Error: " + m.podcastUpdateError))
+		b.WriteString("\n\n")
+		b.WriteString(statusBarStyle.Render("Press enter or esc to continue"))
+	} else if m.podcastUpdateComplete {
+		// Download finished
+		if m.podcastDownloaded == 0 && m.podcastDeleted == 0 {
+			b.WriteString(podcastProgressStyle.Render("Nothing to update"))
+		} else {
+			if m.podcastDownloaded == 1 {
+				b.WriteString(podcastProgressStyle.Render("1 episode downloaded"))
+			} else if m.podcastDownloaded > 1 {
+				b.WriteString(podcastProgressStyle.Render(fmt.Sprintf("%d episodes downloaded", m.podcastDownloaded)))
+			}
+			if m.podcastDeleted > 0 {
+				if m.podcastDownloaded > 0 {
+					b.WriteString("\n")
+				}
+				if m.podcastDeleted == 1 {
+					b.WriteString(podcastProgressStyle.Render("1 old episode removed"))
+				} else {
+					b.WriteString(podcastProgressStyle.Render(fmt.Sprintf("%d old episodes removed", m.podcastDeleted)))
+				}
+			}
+		}
+		b.WriteString("\n\n")
+		b.WriteString(statusBarStyle.Render("Press enter or esc to continue"))
+	} else if m.podcastConfirmPending && m.podcastCheckResult != nil {
+		result := m.podcastCheckResult
+
+		// Show new episodes to download
+		if len(result.Downloads) > 0 {
+			if len(result.Downloads) == 1 {
+				b.WriteString(podcastProgressStyle.Render("1 new episode:"))
+			} else {
+				b.WriteString(podcastProgressStyle.Render(fmt.Sprintf("%d new episodes:", len(result.Downloads))))
+			}
+			b.WriteString("\n\n")
+
+			// Group by podcast name
+			grouped := make(map[string][]PendingEpisode)
+			var order []string
+			for _, ep := range result.Downloads {
+				if _, exists := grouped[ep.PodcastName]; !exists {
+					order = append(order, ep.PodcastName)
+				}
+				grouped[ep.PodcastName] = append(grouped[ep.PodcastName], ep)
+			}
+
+			maxLines := m.height - 14
+			if maxLines < 5 {
+				maxLines = 5
+			}
+			lines := 0
+
+			for _, name := range order {
+				if lines >= maxLines {
+					remaining := len(result.Downloads) - lines
+					b.WriteString(podcastProgressStyle.Render(fmt.Sprintf("  ...and %d more", remaining)))
+					b.WriteString("\n")
+					break
+				}
+				b.WriteString(podcastSelectedStyle.Render("  " + name))
+				b.WriteString("\n")
+				lines++
+				for _, ep := range grouped[name] {
+					if lines >= maxLines {
+						break
+					}
+					b.WriteString(podcastProgressStyle.Render("    " + ep.Title))
+					b.WriteString("\n")
+					lines++
+				}
+			}
+		}
+
+		// Show deletions
+		if len(result.Deletes) > 0 {
+			if len(result.Downloads) > 0 {
+				b.WriteString("\n")
+			}
+			if len(result.Deletes) == 1 {
+				b.WriteString(podcastProgressStyle.Render("1 old episode to remove"))
+			} else {
+				b.WriteString(podcastProgressStyle.Render(fmt.Sprintf("%d old episodes to remove", len(result.Deletes))))
+			}
+			b.WriteString("\n")
+		}
+
+		// Show errors
+		if len(result.Errors) > 0 {
+			b.WriteString("\n")
+			for _, e := range result.Errors {
+				b.WriteString(podcastProgressStyle.Render("  Error: " + e))
+				b.WriteString("\n")
+			}
+		}
+
+		b.WriteString("\n")
+		b.WriteString(statusBarStyle.Render("Press y to download, n to cancel"))
+	} else if m.podcastCheckResult != nil {
+		// Check done, nothing new
+		if len(m.podcastCheckResult.Errors) > 0 {
+			b.WriteString(podcastProgressStyle.Render("Podcasts are up to date"))
+			b.WriteString("\n\n")
+			for _, e := range m.podcastCheckResult.Errors {
+				b.WriteString(podcastProgressStyle.Render("  Error: " + e))
+				b.WriteString("\n")
+			}
+		} else {
+			b.WriteString(podcastProgressStyle.Render("Podcasts are up to date"))
+		}
+		b.WriteString("\n\n")
+		b.WriteString(statusBarStyle.Render("Press enter or esc to continue"))
 	} else {
-		b.WriteString(podcastProgressStyle.Render(m.podcastProgress))
+		// No podcasts subscribed
+		b.WriteString(podcastProgressStyle.Render("No podcasts subscribed"))
 		b.WriteString("\n\n")
 		b.WriteString(statusBarStyle.Render("Press enter or esc to continue"))
 	}
