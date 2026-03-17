@@ -1,0 +1,38 @@
+# rockbox-playlist configuration
+# Copy to ~/.config/rockbox-playlist/config.toml (or $XDG_CONFIG_HOME/rockbox-playlist/config.toml)
+
+[device]
+# Explicit device mount path. Leave empty to auto-detect.
+path = ""
+# Paths to scan during auto-detection (supports globs).
+search_paths = ["/Volumes/NO NAME", "/mnt/rockbox", "/media/*/NO NAME"]
+# Directory name for playlists on the device.
+playlist_dir = "Playlists"
+# Directory name for music on the device.
+music_dir = "Music"
+# Directory name for audiobooks/podcasts on the device.
+audiobooks_dir = "Audiobooks"
+
+[sync]
+# Source directory for rsync-based music sync. Leave empty to disable.
+source = ""
+
+[music]
+# How often to rescan the music directory (Go duration string).
+rescan_interval = "5s"
+
+[backup]
+# Number of playlist backup snapshots to retain.
+max_backups = 10
+
+[podcast]
+# Number of episodes to keep per podcast.
+episodes_to_keep = 3
+
+[server]
+# Listen address for the SSH server.
+host = "0.0.0.0"
+# Listen port for the SSH server.
+port = "2222"
+# Directory for SSH host key files.
+host_key_dir = ".ssh"

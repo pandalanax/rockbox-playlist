@@ -1,6 +1,7 @@
 package main
 
 import (
+	_ "embed"
 	"flag"
 	"fmt"
 	"io"
@@ -15,6 +16,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+//go:embed config.toml
+var defaultConfigTOML string
 
 // Screen states
 type screen int
@@ -1748,6 +1752,12 @@ func (m Model) viewPodcastAdding() string {
 }
 
 func main() {
+	// Subcommands (handled before flag parsing)
+	if len(os.Args) > 1 && os.Args[1] == "config" {
+		fmt.Print(defaultConfigTOML)
+		return
+	}
+
 	// Load config file (defaults if not found)
 	cfg := LoadConfig()
 

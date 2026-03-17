@@ -29,6 +29,26 @@ Or directly:
 go build -o rockbox-playlist .
 ```
 
+## Configuration
+
+Configuration is loaded from `~/.config/rockbox-playlist/config.toml` (or `$XDG_CONFIG_HOME/rockbox-playlist/config.toml`). All settings have sensible defaults and the file is optional.
+
+Generate a default config file:
+
+```bash
+mkdir -p ~/.config/rockbox-playlist
+rockbox-playlist config > ~/.config/rockbox-playlist/config.toml
+```
+
+Settings can also be overridden with CLI flags or environment variables. Precedence (highest to lowest):
+
+1. CLI flags (`--device-path`, `--sync-source`, `--host`, `--port`, `--host-key-dir`)
+2. Environment variables (`ROCKBOX_DEVICE_PATH`, `ROCKBOX_SYNC_SOURCE`, `ROCKBOX_SSH_PORT`)
+3. Config file
+4. Built-in defaults
+
+See [`config.toml`](config.toml) for all available options and their defaults.
+
 ## Usage
 
 ```bash
