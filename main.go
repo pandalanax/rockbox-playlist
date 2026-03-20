@@ -21,6 +21,9 @@ import (
 //go:embed config.toml
 var defaultConfigTOML string
 
+// version is set at build time via ldflags
+var version = "dev"
+
 // Screen states
 type screen int
 
@@ -1921,6 +1924,10 @@ func (m Model) viewPodcastAdding() string {
 
 func main() {
 	// Subcommands (handled before flag parsing)
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
+		fmt.Println(version)
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "config" {
 		fmt.Print(defaultConfigTOML)
 		return
