@@ -536,9 +536,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.syncAddToRecent && m.syncComplete {
 			playlistPath := filepath.Join(m.playlistDir, "Recently Added.m3u8")
+			audioExts := map[string]bool{".flac": true, ".mp3": true, ".m4a": true, ".ogg": true, ".wav": true}
 			var newEntries []string
 			for _, f := range m.syncPendingFiles {
-				newEntries = append(newEntries, "../"+f)
+				if !audioExts[strings.ToLower(filepath.Ext(f))] {
+					continue
+				}
+				newEntries = append(newEntries, "../"+m.appConfig.Device.MusicDir+"/"+f)
 			}
 			if err := UpdateRecentlyAdded(playlistPath, newEntries, 100); err != nil {
 				m.syncError = fmt.Sprintf("Synced but failed to update playlist: %v", err)
