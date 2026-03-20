@@ -92,9 +92,16 @@ func runSync(source, dest string, expectedCount int) tea.Cmd {
 		// Actual sync
 		// -r: recursive
 		// --size-only: skip files that match in size
-		// --info=progress2: show overall progress
-		// --no-inc-recursive: build file list upfront for accurate progress
-		cmd := exec.Command("rsync", "-r", "--size-only", "--info=progress2", "--no-inc-recursive", source, dest)
+		args := []string{"-r", "--size-only"}
+
+		// --info=progress2 is not supported by macOS openrsync, detect and skip
+		check := exec.Command("rsync", "--info=progress2", "--version")
+		if check.Run() == nil {
+			args = append(args, "--info=progress2", "--no-inc-recursive")
+		}
+
+		args = append(args, source, dest)
+		cmd := exec.Command("rsync", args...)
 
 		pipe, err := cmd.StdoutPipe()
 		if err != nil {
