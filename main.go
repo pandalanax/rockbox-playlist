@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -39,6 +40,7 @@ const (
 	screenPodcastSearch
 	screenPodcastResults
 	screenPodcastAdding
+	screenPodcastRemove
 )
 
 // Custom key bindings
@@ -95,6 +97,7 @@ var (
 	selectedTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("170"))
 	selectedDimStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Italic(true)
 	selectedSongStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	addedSongStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("114")) // green for + lines
 	errorTitleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("196")).Padding(1, 2)
 	errorMsgStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Padding(0, 2)
 	errorHintStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Padding(1, 2)
@@ -189,7 +192,8 @@ type Model struct {
 	songList         list.Model
 	searchInput      textinput.Model
 	filteredIndices  []int // Indices into songList.Items() that match search
-	existingEntries  map[string]bool
+	existingEntries    map[string]bool
+	playlistSongNames []string // Display names of songs already in the playlist
 	width            int
 	height           int
 	err              error
@@ -212,6 +216,7 @@ type Model struct {
 	syncComplete       bool     // Sync finished successfully
 	syncCount          int      // Number of files synced
 	syncError          string   // Error message if sync failed
+	syncAddToRecent    bool     // Whether to add synced files to Recently Added playlist
 
 	// Podcast fields
 	podcastConfig         PodcastConfig
@@ -230,6 +235,11 @@ type Model struct {
 	podcastDownloaded     int                 // Number of episodes downloaded
 	podcastDeleted        int                 // Number of episodes deleted
 	podcastUpdateError    string              // Error during download phase
+
+	// Podcast remove fields
+	podcastRemoveNames   []string
+	podcastRemoveIndex   int
+	podcastConfirmRemove bool
 }
 
 // Messages
@@ -521,6 +531,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.syncComplete = true
 			m.syncCount = msg.count
 		}
+		if m.syncAddToRecent && m.syncComplete {
+			playlistPath := filepath.Join(m.playlistDir, "Recently Added.m3u8")
+			var newEntries []string
+			for _, f := range m.syncPendingFiles {
+				newEntries = append(newEntries, "../"+f)
+			}
+			if err := UpdateRecentlyAdded(playlistPath, newEntries, 100); err != nil {
+				m.syncError = fmt.Sprintf("Synced but failed to update playlist: %v", err)
+			}
+			m.syncAddToRecent = false
+		}
 		// Stay on sync screen to show results
 		return m, nil
 
@@ -598,6 +619,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updatePodcastResults(msg)
 		case screenPodcastAdding:
 			return m.updatePodcastAdding(msg)
+		case screenPodcastRemove:
+			return m.updatePodcastRemove(msg)
 		}
 	}
 
@@ -636,6 +659,7 @@ func (m *Model) setupPlaylistList() {
 		}
 		if syncSource != "" {
 			bindings = append(bindings, key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "sync")))
+			bindings = append(bindings, key.NewBinding(key.WithKeys("S"), key.WithHelp("S", "sync+recent")))
 		}
 		return bindings
 	}
@@ -704,6 +728,10 @@ func (m Model) updatePlaylistPicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case msg.String() == "s" && m.playlistList.FilterState() == list.Unfiltered:
+		m.syncAddToRecent = false
+		return m.handleSyncKey()
+	case msg.String() == "S" && m.playlistList.FilterState() == list.Unfiltered:
+		m.syncAddToRecent = true
 		return m.handleSyncKey()
 	case msg.String() == "b" && m.playlistList.FilterState() == list.Unfiltered:
 		return m, m.startBackup()
@@ -731,13 +759,14 @@ func (m Model) updatePlaylistPicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
-			// Load existing entries to filter duplicates
+			// Load existing entries to filter duplicates and build display names
 			entries, _ := LoadPlaylistEntries(item.playlist.Path)
 			m.existingEntries = make(map[string]bool)
 			for _, e := range entries {
 				normalized := NormalizePath(e)
 				m.existingEntries[normalized] = true
 			}
+			m.playlistSongNames = m.buildPlaylistDisplayNames(entries)
 			// Setup song list
 			m.setupSongList()
 			m.searchInput.SetValue("")
@@ -749,6 +778,27 @@ func (m Model) updatePlaylistPicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.playlistList, cmd = m.playlistList.Update(msg)
 	return m, cmd
+}
+
+func (m *Model) buildPlaylistDisplayNames(entries []string) []string {
+	// Build a lookup from normalized path -> Song for display names
+	songByPath := make(map[string]Song, len(m.songs))
+	for _, s := range m.songs {
+		relPath := s.RelativePath(m.musicDir)
+		songByPath[NormalizePath(relPath)] = s
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		normalized := NormalizePath(e)
+		if song, ok := songByPath[normalized]; ok {
+			names = append(names, song.ConfirmDisplayName())
+		} else {
+			// Fallback: use filename without extension
+			base := filepath.Base(e)
+			names = append(names, strings.TrimSuffix(base, filepath.Ext(base)))
+		}
+	}
+	return names
 }
 
 func (m *Model) setupSongList() {
@@ -1030,6 +1080,7 @@ func (m Model) updateSync(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.syncPendingFiles = nil
 		m.syncComplete = false
 		m.syncError = ""
+		m.syncAddToRecent = false
 		return m, nil
 	}
 	return m, nil
@@ -1039,6 +1090,7 @@ func (m Model) updateSync(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 var podcastMenuItems = []string{
 	"Update all podcasts",
 	"Add new podcast",
+	"Remove podcast",
 	"Browse & add songs",
 	"Back",
 }
@@ -1075,7 +1127,18 @@ func (m Model) updatePodcastMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.podcastSearchInput.Focus()
 			m.podcastResults = nil
 			return m, nil
-		case 2: // Browse & add songs
+		case 2: // Remove podcast
+			var names []string
+			for name := range m.podcastConfig {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			m.podcastRemoveNames = names
+			m.podcastRemoveIndex = 0
+			m.podcastConfirmRemove = false
+			m.screen = screenPodcastRemove
+			return m, nil
+		case 3: // Browse & add songs
 			// Load existing entries to filter duplicates
 			entries, _ := LoadPlaylistEntries(m.selectedPlaylist.Path)
 			m.existingEntries = make(map[string]bool)
@@ -1083,12 +1146,13 @@ func (m Model) updatePodcastMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				normalized := NormalizePath(e)
 				m.existingEntries[normalized] = true
 			}
+			m.playlistSongNames = m.buildPlaylistDisplayNames(entries)
 			m.setupSongList()
 			m.searchInput.SetValue("")
 			m.searchInput.Focus()
 			m.screen = screenSongBrowser
 			return m, nil
-		case 3: // Back
+		case 4: // Back
 			m.screen = screenPlaylistPicker
 			return m, nil
 		}
@@ -1305,6 +1369,8 @@ func (m Model) View() string {
 		return m.viewPodcastResults()
 	case screenPodcastAdding:
 		return m.viewPodcastAdding()
+	case screenPodcastRemove:
+		return m.viewPodcastRemove()
 	}
 	return ""
 }
@@ -1395,37 +1461,58 @@ func (m Model) viewSongBrowser() string {
 
 	leftPanel := lipgloss.NewStyle().Width(leftWidth).Render(left.String())
 
-	// === Right panel: selected songs ===
+	// === Right panel: playlist contents ===
 	var right strings.Builder
 
-	right.WriteString(selectedTitleStyle.Render(fmt.Sprintf("Selected (%d)", selectedCount)))
+	totalCount := len(m.playlistSongNames) + selectedCount
+	right.WriteString(selectedTitleStyle.Render(fmt.Sprintf("%s (%d)", m.selectedPlaylist.Name, totalCount)))
 	right.WriteString("\n\n")
 
-	if len(m.selectedOrder) == 0 {
-		right.WriteString(selectedDimStyle.Render("No songs selected"))
-	} else {
-		// Build a path -> song lookup from the full songs list
-		songMap := make(map[string]Song, len(m.songs))
-		for _, s := range m.songs {
-			songMap[s.Path] = s
+	// Build selected song display names for the + lines
+	songMap := make(map[string]Song, len(m.songs))
+	for _, s := range m.songs {
+		songMap[s.Path] = s
+	}
+	var addedNames []string
+	for _, path := range m.selectedOrder {
+		if song, ok := songMap[path]; ok {
+			addedNames = append(addedNames, song.ConfirmDisplayName())
 		}
+	}
 
-		// Show selected songs in selection order, capped to visible height
-		maxVisible := m.height - 5
-		if maxVisible < 1 {
-			maxVisible = 1
+	maxVisible := m.height - 5
+	if maxVisible < 1 {
+		maxVisible = 1
+	}
+	lineCount := 0
+
+	// Show existing playlist songs first
+	for _, name := range m.playlistSongNames {
+		if lineCount >= maxVisible {
+			remaining := len(m.playlistSongNames) - lineCount + len(addedNames)
+			right.WriteString(selectedDimStyle.Render(fmt.Sprintf("... and %d more", remaining)))
+			break
 		}
-		for i, path := range m.selectedOrder {
-			if i >= maxVisible {
-				remaining := len(m.selectedOrder) - maxVisible
-				right.WriteString(selectedDimStyle.Render(fmt.Sprintf("... and %d more", remaining)))
-				break
-			}
-			if song, ok := songMap[path]; ok {
-				right.WriteString(selectedSongStyle.Render("• " + song.ConfirmDisplayName()))
-			}
-			right.WriteString("\n")
+		right.WriteString(selectedSongStyle.Render("  " + name))
+		right.WriteString("\n")
+		lineCount++
+	}
+
+	// Show newly selected songs at the end with green + prefix
+	for _, name := range addedNames {
+		if lineCount >= maxVisible {
+			remaining := len(addedNames) - (lineCount - len(m.playlistSongNames))
+			right.WriteString(selectedDimStyle.Render(fmt.Sprintf("... and %d more", remaining)))
+			lineCount++
+			break
 		}
+		right.WriteString(addedSongStyle.Render("+ " + name))
+		right.WriteString("\n")
+		lineCount++
+	}
+
+	if totalCount == 0 {
+		right.WriteString(selectedDimStyle.Render("Empty playlist"))
 	}
 
 	rightPanel := selectedPanelStyle.Width(rightWidth).Height(m.height - 1).Render(right.String())
@@ -1724,6 +1811,87 @@ func (m Model) viewPodcastResults() string {
 
 	b.WriteString("\n")
 	b.WriteString(statusBarStyle.Render("enter: add podcast | esc: back"))
+
+	return wrapStyle.Render(b.String())
+}
+
+func (m Model) updatePodcastRemove(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.podcastConfirmRemove {
+		switch {
+		case key.Matches(msg, keys.Yes):
+			name := m.podcastRemoveNames[m.podcastRemoveIndex]
+			RemovePodcast(name, m.podcastConfig, m.podcastAudioDir)
+			SavePodcastConfig(m.podcastConfigPath, m.podcastConfig)
+			if m.selectedPlaylist != nil {
+				RebuildPodcastPlaylist(m.podcastConfig, m.selectedPlaylist.Path, m.podcastAudioDir)
+			}
+			m.podcastConfirmRemove = false
+			m.message = fmt.Sprintf("Removed \"%s\"", name)
+			m.screen = screenPodcastMenu
+			m.podcastMenuIndex = 0
+			return m, nil
+		case key.Matches(msg, keys.No), msg.Type == tea.KeyEsc:
+			m.podcastConfirmRemove = false
+			return m, nil
+		}
+		return m, nil
+	}
+
+	switch msg.Type {
+	case tea.KeyCtrlC:
+		return m, tea.Quit
+	case tea.KeyUp:
+		if m.podcastRemoveIndex > 0 {
+			m.podcastRemoveIndex--
+		}
+		return m, nil
+	case tea.KeyDown:
+		if m.podcastRemoveIndex < len(m.podcastRemoveNames)-1 {
+			m.podcastRemoveIndex++
+		}
+		return m, nil
+	case tea.KeyEnter:
+		if len(m.podcastRemoveNames) > 0 {
+			m.podcastConfirmRemove = true
+		}
+		return m, nil
+	case tea.KeyEsc:
+		m.screen = screenPodcastMenu
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m Model) viewPodcastRemove() string {
+	var b strings.Builder
+
+	b.WriteString(podcastTitleStyle.Render("Remove Podcast"))
+	b.WriteString("\n")
+
+	if len(m.podcastRemoveNames) == 0 {
+		b.WriteString(podcastItemStyle.Render("No podcasts subscribed"))
+		b.WriteString("\n\n")
+		b.WriteString(statusBarStyle.Render("esc: back"))
+		return wrapStyle.Render(b.String())
+	}
+
+	for i, name := range m.podcastRemoveNames {
+		if i == m.podcastRemoveIndex {
+			b.WriteString(podcastSelectedStyle.Render("> " + name))
+		} else {
+			b.WriteString(podcastItemStyle.Render("  " + name))
+		}
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\n")
+
+	if m.podcastConfirmRemove {
+		name := m.podcastRemoveNames[m.podcastRemoveIndex]
+		b.WriteString(dangerConfirmStyle.Render(fmt.Sprintf("Remove \"%s\"? This deletes all episodes. (y/n)", name)))
+	} else {
+		b.WriteString(statusBarStyle.Render("enter: select | esc: back"))
+	}
 
 	return wrapStyle.Render(b.String())
 }
