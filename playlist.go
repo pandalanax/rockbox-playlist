@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // Playlist represents a m3u8 playlist file
@@ -88,7 +90,7 @@ func AppendToPlaylist(playlistPath string, entries []string) error {
 	defer f.Close()
 
 	for _, entry := range entries {
-		if _, err := f.WriteString(entry + "\n"); err != nil {
+		if _, err := f.WriteString(norm.NFC.String(entry) + "\n"); err != nil {
 			return fmt.Errorf("failed writing to playlist (disk full?): %w", err)
 		}
 	}
@@ -116,7 +118,7 @@ func UpdateRecentlyAdded(playlistPath string, newEntries []string, maxEntries in
 	defer f.Close()
 
 	for _, entry := range combined {
-		if _, err := f.WriteString(entry + "\n"); err != nil {
+		if _, err := f.WriteString(norm.NFC.String(entry) + "\n"); err != nil {
 			return fmt.Errorf("failed writing to playlist: %w", err)
 		}
 	}

@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // httpGet performs an HTTP GET with a proper User-Agent header to avoid 403 errors
@@ -888,7 +890,7 @@ func RebuildPodcastPlaylist(config PodcastConfig, playlistPath, audioDir string)
 		lines = append(lines, ep.path)
 	}
 
-	content := strings.Join(lines, "\n") + "\n"
+	content := norm.NFC.String(strings.Join(lines, "\n") + "\n")
 	if err := os.WriteFile(playlistPath, []byte(content), 0644); err != nil {
 		return fmt.Errorf("could not write playlist: %w", err)
 	}

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 func TestNormalizePath(t *testing.T) {
@@ -396,6 +398,59 @@ func TestUpdateRecentlyAdded_EmojiPaths(t *testing.T) {
 		if loaded[i] != want {
 			t.Errorf("entry %d: got %q, want %q", i, loaded[i], want)
 		}
+	}
+}
+
+func TestAppendToPlaylist_NFDNormalized(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.m3u8")
+
+	// NFD: e + combining acute accent (U+0301)
+	nfdPath := "../Music/Mu\u0301m/Finally We Are No One/05 - Behind Two Hills.flac"
+	// NFC: é as single codepoint (U+00E9)
+	nfcPath := "../Music/Múm/Finally We Are No One/05 - Behind Two Hills.flac"
+
+	err := AppendToPlaylist(path, []string{nfdPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entries, _ := LoadPlaylistEntries(path)
+	if len(entries) != 1 {
+		t.Fatalf("got %d entries, want 1", len(entries))
+	}
+	if entries[0] != nfcPath {
+		t.Errorf("entry not NFC normalized: got %q, want %q", entries[0], nfcPath)
+	}
+	if !norm.NFC.IsNormalString(entries[0]) {
+		t.Error("entry is not NFC")
+	}
+}
+
+func TestUpdateRecentlyAdded_NFDNormalized(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Recently Added.m3u8")
+
+	// NFD decomposed é and è
+	entries := []string{
+		"../Music/Mu\u0301m/Album/track.flac",
+		"../Music/Keny Arkana/Entre ciment et belle e\u0301toile/song.flac",
+		"../Music/Artist/La me\u0300re/track.flac",
+	}
+
+	err := UpdateRecentlyAdded(path, entries, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, _ := LoadPlaylistEntries(path)
+	for i, entry := range loaded {
+		if !norm.NFC.IsNormalString(entry) {
+			t.Errorf("entry %d is not NFC normalized: %q", i, entry)
+		}
+	}
+	if loaded[0] != "../Music/Múm/Album/track.flac" {
+		t.Errorf("entry 0: got %q, want NFC form", loaded[0])
 	}
 }
 
