@@ -96,6 +96,33 @@ func AppendToPlaylist(playlistPath string, entries []string) error {
 	return nil
 }
 
+// UpdateRecentlyAdded appends newEntries to the playlist at playlistPath,
+// trimming oldest entries (from the front) if the total exceeds maxEntries.
+func UpdateRecentlyAdded(playlistPath string, newEntries []string, maxEntries int) error {
+	existing, err := LoadPlaylistEntries(playlistPath)
+	if err != nil {
+		return err
+	}
+
+	combined := append(existing, newEntries...)
+	if len(combined) > maxEntries {
+		combined = combined[len(combined)-maxEntries:]
+	}
+
+	f, err := os.Create(playlistPath)
+	if err != nil {
+		return fmt.Errorf("could not write playlist %q: %w", filepath.Base(playlistPath), err)
+	}
+	defer f.Close()
+
+	for _, entry := range combined {
+		if _, err := f.WriteString(entry + "\n"); err != nil {
+			return fmt.Errorf("failed writing to playlist: %w", err)
+		}
+	}
+	return nil
+}
+
 // NormalizePath normalizes a path for comparison (removes ../ prefix variations)
 func NormalizePath(path string) string {
 	// Remove leading ../ or ./
