@@ -1925,6 +1925,26 @@ func main() {
 		fmt.Print(defaultConfigTOML)
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "doctor" {
+		cfg := LoadConfig()
+		var devicePath string
+		if len(os.Args) > 2 {
+			devicePath = os.Args[2]
+		} else if cfg.Device.Path != "" {
+			devicePath = cfg.Device.Path
+		} else {
+			devicePath = FindDevicePath(cfg.Device.SearchPaths, cfg.Device.MusicDir, cfg.Device.PlaylistDir)
+		}
+		if devicePath == "" {
+			fmt.Fprintln(os.Stderr, "No device found. Usage: rockbox-playlist doctor [device-path]")
+			os.Exit(1)
+		}
+		runDoctor(
+			filepath.Join(devicePath, cfg.Device.PlaylistDir),
+			filepath.Join(devicePath, cfg.Device.MusicDir),
+		)
+		return
+	}
 
 	// Load config file (defaults if not found)
 	cfg := LoadConfig()
