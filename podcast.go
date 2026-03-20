@@ -30,8 +30,9 @@ type PodcastConfig map[string]PodcastFeed
 
 // PodcastFeed represents a single podcast subscription
 type PodcastFeed struct {
-	FeedURL  string    `json:"feedUrl"`
-	Episodes []Episode `json:"episodes"`
+	FeedURL    string    `json:"feedUrl"`
+	ArtworkURL string    `json:"artworkUrl,omitempty"`
+	Episodes   []Episode `json:"episodes"`
 }
 
 // Episode represents a downloaded episode
@@ -62,8 +63,29 @@ type RSSFeed struct {
 
 // RSSChannel represents the channel element in RSS
 type RSSChannel struct {
-	Title string    `xml:"title"`
-	Items []RSSItem `xml:"item"`
+	Title       string         `xml:"title"`
+	Items       []RSSItem      `xml:"item"`
+	ITunesImage RSSITunesImage `xml:"http://www.itunes.com/dtds/podcast-1.0.dtd image"`
+	Image       RSSImage       `xml:"image"`
+}
+
+// RSSITunesImage represents the itunes:image element
+type RSSITunesImage struct {
+	Href string `xml:"href,attr"`
+}
+
+// RSSImage represents the standard RSS channel image
+type RSSImage struct {
+	URL string `xml:"url"`
+}
+
+// ArtworkURL returns the best artwork URL from the feed.
+// Priority: itunes:image > standard RSS image.
+func (ch *RSSChannel) ArtworkURL() string {
+	if ch.ITunesImage.Href != "" {
+		return ch.ITunesImage.Href
+	}
+	return ch.Image.URL
 }
 
 // RSSItem represents an item (episode) in RSS
@@ -311,6 +333,11 @@ func UpdatePodcastWithLog(name string, feed *PodcastFeed, audioDir string, episo
 		return 0, 0, log, err
 	}
 
+	// Backfill artwork URL from RSS if missing
+	if feed.ArtworkURL == "" {
+		feed.ArtworkURL = rssFeed.Channel.ArtworkURL()
+	}
+
 	// Get latest episodes from RSS
 	rssEpisodes := ParseRSSEpisodes(rssFeed, episodesToKeep)
 
@@ -345,6 +372,8 @@ func UpdatePodcastWithLog(name string, feed *PodcastFeed, audioDir string, episo
 		if dlErr := DownloadEpisode(ep.URL, epPath, nil); dlErr != nil {
 			return newCount, deletedCount, log, dlErr
 		}
+		coverPath, _ := EnsureCoverArt(podcastDir, feed.ArtworkURL)
+		_ = TagEpisode(epPath, name, ep.Title, coverPath)
 		newCount++
 	}
 
@@ -384,6 +413,7 @@ type PendingEpisode struct {
 	URL         string
 	DestPath    string
 	Date        string
+	ArtworkURL  string
 }
 
 // PendingDelete represents an episode that would be deleted during a podcast update
@@ -420,6 +450,12 @@ func CheckPodcastUpdates(config PodcastConfig, audioDir string, episodesToKeep i
 		// Get latest episodes from RSS
 		rssEpisodes := ParseRSSEpisodes(rssFeed, episodesToKeep)
 
+		// Backfill artwork URL from RSS if missing
+		artworkURL := feed.ArtworkURL
+		if artworkURL == "" {
+			artworkURL = rssFeed.Channel.ArtworkURL()
+		}
+
 		// Check which episodes are new (not on disk)
 		for _, ep := range rssEpisodes {
 			ext := GetFileExtension(ep.URL)
@@ -435,6 +471,7 @@ func CheckPodcastUpdates(config PodcastConfig, audioDir string, episodesToKeep i
 					URL:         ep.URL,
 					DestPath:    epPath,
 					Date:        dateStr,
+					ArtworkURL:  artworkURL,
 				})
 			}
 		}
@@ -480,6 +517,8 @@ func ExecutePodcastUpdates(result PodcastCheckResult, config PodcastConfig, audi
 		if dlErr := DownloadEpisode(ep.URL, ep.DestPath, nil); dlErr != nil {
 			return downloaded, deleted, fmt.Errorf("downloading %s - %s: %w", ep.PodcastName, ep.Title, dlErr)
 		}
+		coverPath, _ := EnsureCoverArt(podcastDir, ep.ArtworkURL)
+		_ = TagEpisode(ep.DestPath, ep.PodcastName, ep.Title, coverPath)
 		downloaded++
 	}
 
@@ -558,6 +597,11 @@ func UpdatePodcast(name string, feed *PodcastFeed, audioDir string, episodesToKe
 		return 0, err
 	}
 
+	// Backfill artwork URL from RSS if missing
+	if feed.ArtworkURL == "" {
+		feed.ArtworkURL = rssFeed.Channel.ArtworkURL()
+	}
+
 	// Get latest episodes from RSS
 	rssEpisodes := ParseRSSEpisodes(rssFeed, episodesToKeep)
 
@@ -595,6 +639,8 @@ func UpdatePodcast(name string, feed *PodcastFeed, audioDir string, episodesToKe
 		if err := DownloadEpisode(ep.URL, filepath, nil); err != nil {
 			return newCount, err
 		}
+		coverPath, _ := EnsureCoverArt(podcastDir, feed.ArtworkURL)
+		_ = TagEpisode(filepath, name, ep.Title, coverPath)
 		newCount++
 	}
 
@@ -667,6 +713,12 @@ func AddPodcastWithLog(podcast iTunesPodcast, audioDir string, config PodcastCon
 		return log, err
 	}
 
+	// Determine artwork URL: iTunes > RSS feed
+	artworkURL := podcast.ArtworkURL
+	if artworkURL == "" {
+		artworkURL = rssFeed.Channel.ArtworkURL()
+	}
+
 	// Get latest episodes
 	rssEpisodes := ParseRSSEpisodes(rssFeed, episodesToKeep)
 
@@ -696,6 +748,13 @@ func AddPodcastWithLog(podcast iTunesPodcast, audioDir string, config PodcastCon
 		if dlErr := DownloadEpisode(ep.URL, epPath, nil); dlErr != nil {
 			return log, dlErr
 		}
+		coverPath, coverErr := EnsureCoverArt(podcastDir, artworkURL)
+		if coverErr != nil {
+			log = append(log, fmt.Sprintf("  Cover art: %v", coverErr))
+		}
+		if tagErr := TagEpisode(epPath, name, ep.Title, coverPath); tagErr != nil {
+			log = append(log, fmt.Sprintf("  Tagging: %v", tagErr))
+		}
 		log = append(log, fmt.Sprintf("Saved: %s/%s", folderName, filename))
 		downloadCount++
 	}
@@ -707,8 +766,9 @@ func AddPodcastWithLog(podcast iTunesPodcast, audioDir string, config PodcastCon
 
 	// Add to config
 	config[name] = PodcastFeed{
-		FeedURL:  podcast.FeedURL,
-		Episodes: episodes,
+		FeedURL:    podcast.FeedURL,
+		ArtworkURL: artworkURL,
+		Episodes:   episodes,
 	}
 
 	log = append(log, "")
@@ -737,6 +797,12 @@ func AddPodcast(podcast iTunesPodcast, audioDir string, config PodcastConfig, ep
 	rssFeed, err := FetchRSSFeed(podcast.FeedURL)
 	if err != nil {
 		return err
+	}
+
+	// Determine artwork URL: iTunes > RSS feed
+	artworkURL := podcast.ArtworkURL
+	if artworkURL == "" {
+		artworkURL = rssFeed.Channel.ArtworkURL()
 	}
 
 	// Get latest episodes
@@ -770,6 +836,8 @@ func AddPodcast(podcast iTunesPodcast, audioDir string, config PodcastConfig, ep
 		if err := DownloadEpisode(ep.URL, filepath, nil); err != nil {
 			return err
 		}
+		coverPath, _ := EnsureCoverArt(podcastDir, artworkURL)
+		_ = TagEpisode(filepath, name, ep.Title, coverPath)
 	}
 
 	// Sort by date descending
@@ -779,8 +847,9 @@ func AddPodcast(podcast iTunesPodcast, audioDir string, config PodcastConfig, ep
 
 	// Add to config
 	config[name] = PodcastFeed{
-		FeedURL:  podcast.FeedURL,
-		Episodes: episodes,
+		FeedURL:    podcast.FeedURL,
+		ArtworkURL: artworkURL,
+		Episodes:   episodes,
 	}
 
 	return nil
@@ -825,6 +894,15 @@ func RebuildPodcastPlaylist(config PodcastConfig, playlistPath, audioDir string)
 	}
 
 	return nil
+}
+
+// RemovePodcast removes a podcast: deletes its folder from disk and removes it from the config map.
+// The caller is responsible for saving the config and rebuilding the playlist.
+func RemovePodcast(name string, config PodcastConfig, audioDir string) {
+	folderName := SanitizeName(name)
+	podcastDir := filepath.Join(audioDir, folderName)
+	os.RemoveAll(podcastDir)
+	delete(config, name)
 }
 
 // IsPodcastPlaylist checks if a playlist name indicates it's a podcast playlist
