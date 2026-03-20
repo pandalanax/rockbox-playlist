@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-03-20
+
+### Added
+- Remove podcast: delete a subscribed podcast from the podcast menu
+  - Removes episode folder from disk, updates config, rebuilds playlist
+  - Danger confirmation prompt before deletion
+- Episode tagging: MP3 episodes now get ID3v2 metadata (title, artist, album) and embedded cover art
+- Podcast artwork: cover art fetched from iTunes or RSS feed, cached as cover.jpg per podcast
+- Recently Added playlist: press `S` (shift+s) on playlist picker to sync music and auto-add to Recently Added
+  - Keeps last 100 entries, trims oldest when exceeded
+- Comprehensive test suite covering all modules with edge cases (emoji, unicode, overflow)
+
+### Fixed
+- rsync compatibility with macOS openrsync (skip unsupported `--info=progress2` flag)
+
+## [0.6.4] - 2026-03-17
+
+### Added
+- `config` subcommand: run `rockbox-playlist config` to print the default config.toml to stdout
+- Embedded default config.toml in the binary
+
+## [0.6.3] - 2026-03-16
+
+### Changed
+- Podcast update now uses dry-run preview with confirmation before downloading
+  - Shows pending downloads and deletions before committing
+  - Press `y` to proceed or `n`/`esc` to cancel
+
+## [0.6.2] - 2026-03-14
+
+### Added
+- Playlist creation: press `c` on playlist picker to create a new playlist
+- Playlist deletion: press `d` on playlist picker to delete selected playlist (with y/n confirmation)
+- Sync dry-run preview: sync now shows files to be copied and asks for confirmation before proceeding
+- Sync uses `--size-only` for faster rsync comparisons
+
+### Changed
+- Filter macOS `._` resource fork files from playlist listings
+- Clean up dead code and inconsistencies
+
 ## [0.6.0] - 2026-03-14
 
 ### Added
