@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.4] - 2026-03-21
+
+### Added
+- Playlist edit mode: press `e` in the song browser to navigate and delete songs from the right panel
+- `WritePlaylist` function extracted from `UpdateRecentlyAdded` for reuse
+
 ## [0.7.3] - 2026-03-20
 
 ### Fixed
