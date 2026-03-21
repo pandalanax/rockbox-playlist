@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.5] - 2026-03-21
 
 ### Fixed
-- Linux eject now uses `udisksctl unmount` instead of `umount`, which works without sudo via polkit
+- Linux eject now resolves the mount point to a block device via `findmnt` and uses `udisksctl unmount -b`, which works without sudo via polkit
 
 ## [0.7.4] - 2026-03-21
 

@@ -94,6 +94,8 @@ func WatchForDevice(devicePath string, searchPaths []string) tea.Cmd {
 
 // EjectDevice unmounts/ejects the device at the given path.
 // Platform-aware: uses diskutil on macOS, udisksctl on Linux.
+// On Linux, resolves the mount point to a block device via findmnt,
+// then unmounts with udisksctl which works without sudo via polkit.
 func EjectDevice(path string) tea.Cmd {
 	return func() tea.Msg {
 		var cmd *exec.Cmd
@@ -102,7 +104,20 @@ func EjectDevice(path string) tea.Cmd {
 		case "darwin":
 			cmd = exec.Command("diskutil", "eject", path)
 		case "linux":
-			cmd = exec.Command("udisksctl", "unmount", "-p", path)
+			// Resolve mount point to block device for udisksctl.
+			out, err := exec.Command("findmnt", "-n", "-o", "SOURCE", path).Output()
+			if err != nil {
+				return deviceEjectMsg{
+					err: fmt.Errorf("could not find block device for %s: %w", path, err),
+				}
+			}
+			blockDev := strings.TrimSpace(string(out))
+			if blockDev == "" {
+				return deviceEjectMsg{
+					err: fmt.Errorf("no block device found for mount point %s", path),
+				}
+			}
+			cmd = exec.Command("udisksctl", "unmount", "-b", blockDev)
 		default:
 			return deviceEjectMsg{
 				err: fmt.Errorf("eject not supported on %s", runtime.GOOS),
