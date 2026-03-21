@@ -93,7 +93,7 @@ func WatchForDevice(devicePath string, searchPaths []string) tea.Cmd {
 }
 
 // EjectDevice unmounts/ejects the device at the given path.
-// Platform-aware: uses diskutil on macOS, umount on Linux.
+// Platform-aware: uses diskutil on macOS, udisksctl on Linux.
 func EjectDevice(path string) tea.Cmd {
 	return func() tea.Msg {
 		var cmd *exec.Cmd
@@ -102,7 +102,7 @@ func EjectDevice(path string) tea.Cmd {
 		case "darwin":
 			cmd = exec.Command("diskutil", "eject", path)
 		case "linux":
-			cmd = exec.Command("umount", path)
+			cmd = exec.Command("udisksctl", "unmount", "-p", path)
 		default:
 			return deviceEjectMsg{
 				err: fmt.Errorf("eject not supported on %s", runtime.GOOS),
