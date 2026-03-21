@@ -243,6 +243,11 @@ type Model struct {
 	podcastRemoveNames   []string
 	podcastRemoveIndex   int
 	podcastConfirmRemove bool
+
+	// Playlist edit mode (right panel of song browser)
+	editMode       bool   // Whether right panel is in edit mode
+	editIndex      int    // Cursor position in right panel
+	confirmEditDel bool   // Deletion confirmation overlay active
 }
 
 // Messages
@@ -831,6 +836,10 @@ func (m *Model) setupSongList() {
 }
 
 func (m Model) updateSongBrowser(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.editMode {
+		return m.updateEditMode(msg)
+	}
+
 	switch msg.Type {
 	case tea.KeyCtrlC:
 		return m, tea.Quit
@@ -882,6 +891,13 @@ func (m Model) updateSongBrowser(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.filterSongs()
 		return m, nil
 	case tea.KeySpace, tea.KeyRunes:
+		// Intercept 'e' for edit mode (only when not actively searching)
+		if msg.String() == "e" && m.searchInput.Value() == "" {
+			m.editMode = true
+			m.editIndex = 0
+			m.confirmEditDel = false
+			return m, nil
+		}
 		// Handle typing in search (space is its own key type, not a rune)
 		m.searchInput, _ = m.searchInput.Update(msg)
 		m.filterSongs()
@@ -1459,7 +1475,13 @@ func (m Model) viewSongBrowser() string {
 
 	// Status
 	selectedCount := len(m.selectedSongs)
-	status := statusBarStyle.Render(fmt.Sprintf("%d selected | tab: select | enter: confirm | esc: back/clear", selectedCount))
+	var statusText string
+	if m.editMode {
+		statusText = fmt.Sprintf("%d selected | editing right panel | esc: stop editing", selectedCount)
+	} else {
+		statusText = fmt.Sprintf("%d selected | tab: select | e: edit | enter: confirm | esc: back/clear", selectedCount)
+	}
+	status := statusBarStyle.Render(statusText)
 	left.WriteString(status)
 	left.WriteString("\n\n")
 
@@ -1471,55 +1493,98 @@ func (m Model) viewSongBrowser() string {
 	// === Right panel: playlist contents ===
 	var right strings.Builder
 
-	totalCount := len(m.playlistSongNames) + selectedCount
-	right.WriteString(selectedTitleStyle.Render(fmt.Sprintf("%s (%d)", m.selectedPlaylist.Name, totalCount)))
-	right.WriteString("\n\n")
+	if m.editMode {
+		right.WriteString(selectedTitleStyle.Render(fmt.Sprintf("Edit: %s (%d)", m.selectedPlaylist.Name, len(m.playlistSongNames))))
+		right.WriteString("\n\n")
 
-	// Build selected song display names for the + lines
-	songMap := make(map[string]Song, len(m.songs))
-	for _, s := range m.songs {
-		songMap[s.Path] = s
-	}
-	var addedNames []string
-	for _, path := range m.selectedOrder {
-		if song, ok := songMap[path]; ok {
-			addedNames = append(addedNames, song.ConfirmDisplayName())
+		if len(m.playlistSongNames) == 0 {
+			right.WriteString(selectedDimStyle.Render("Playlist is empty"))
+			right.WriteString("\n\n")
+			right.WriteString(statusBarStyle.Render("esc: back"))
+		} else {
+			maxVisible := m.height - 7
+			if maxVisible < 3 {
+				maxVisible = 3
+			}
+			start := 0
+			if m.editIndex >= maxVisible {
+				start = m.editIndex - maxVisible + 1
+			}
+			end := start + maxVisible
+			if end > len(m.playlistSongNames) {
+				end = len(m.playlistSongNames)
+			}
+
+			for i := start; i < end; i++ {
+				if i == m.editIndex {
+					right.WriteString(podcastSelectedStyle.Render("> " + m.playlistSongNames[i]))
+				} else {
+					right.WriteString(selectedSongStyle.Render("  " + m.playlistSongNames[i]))
+				}
+				right.WriteString("\n")
+			}
+
+			right.WriteString("\n")
+			if m.message != "" {
+				right.WriteString(toastStyle.Render(m.message))
+			} else if m.confirmEditDel {
+				name := m.playlistSongNames[m.editIndex]
+				right.WriteString(dangerConfirmStyle.Render(fmt.Sprintf("Remove \"%s\"? (y/n)", name)))
+			} else {
+				right.WriteString(statusBarStyle.Render("d: remove | esc: back"))
+			}
 		}
-	}
+	} else {
+		totalCount := len(m.playlistSongNames) + selectedCount
+		right.WriteString(selectedTitleStyle.Render(fmt.Sprintf("%s (%d)", m.selectedPlaylist.Name, totalCount)))
+		right.WriteString("\n\n")
 
-	maxVisible := m.height - 5
-	if maxVisible < 1 {
-		maxVisible = 1
-	}
-	lineCount := 0
-
-	// Show existing playlist songs first
-	for _, name := range m.playlistSongNames {
-		if lineCount >= maxVisible {
-			remaining := len(m.playlistSongNames) - lineCount + len(addedNames)
-			right.WriteString(selectedDimStyle.Render(fmt.Sprintf("... and %d more", remaining)))
-			break
+		// Build selected song display names for the + lines
+		songMap := make(map[string]Song, len(m.songs))
+		for _, s := range m.songs {
+			songMap[s.Path] = s
 		}
-		right.WriteString(selectedSongStyle.Render("  " + name))
-		right.WriteString("\n")
-		lineCount++
-	}
+		var addedNames []string
+		for _, path := range m.selectedOrder {
+			if song, ok := songMap[path]; ok {
+				addedNames = append(addedNames, song.ConfirmDisplayName())
+			}
+		}
 
-	// Show newly selected songs at the end with green + prefix
-	for _, name := range addedNames {
-		if lineCount >= maxVisible {
-			remaining := len(addedNames) - (lineCount - len(m.playlistSongNames))
-			right.WriteString(selectedDimStyle.Render(fmt.Sprintf("... and %d more", remaining)))
+		maxVisible := m.height - 5
+		if maxVisible < 1 {
+			maxVisible = 1
+		}
+		lineCount := 0
+
+		// Show existing playlist songs first
+		for _, name := range m.playlistSongNames {
+			if lineCount >= maxVisible {
+				remaining := len(m.playlistSongNames) - lineCount + len(addedNames)
+				right.WriteString(selectedDimStyle.Render(fmt.Sprintf("... and %d more", remaining)))
+				break
+			}
+			right.WriteString(selectedSongStyle.Render("  " + name))
+			right.WriteString("\n")
 			lineCount++
-			break
 		}
-		right.WriteString(addedSongStyle.Render("+ " + name))
-		right.WriteString("\n")
-		lineCount++
-	}
 
-	if totalCount == 0 {
-		right.WriteString(selectedDimStyle.Render("Empty playlist"))
+		// Show newly selected songs at the end with green + prefix
+		for _, name := range addedNames {
+			if lineCount >= maxVisible {
+				remaining := len(addedNames) - (lineCount - len(m.playlistSongNames))
+				right.WriteString(selectedDimStyle.Render(fmt.Sprintf("... and %d more", remaining)))
+				lineCount++
+				break
+			}
+			right.WriteString(addedSongStyle.Render("+ " + name))
+			right.WriteString("\n")
+			lineCount++
+		}
+
+		if totalCount == 0 {
+			right.WriteString(selectedDimStyle.Render("Empty playlist"))
+		}
 	}
 
 	rightPanel := selectedPanelStyle.Width(rightWidth).Height(m.height - 1).Render(right.String())
@@ -1901,6 +1966,70 @@ func (m Model) viewPodcastRemove() string {
 	}
 
 	return wrapStyle.Render(b.String())
+}
+
+func (m Model) updateEditMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.confirmEditDel {
+		switch {
+		case key.Matches(msg, keys.Yes):
+			name := m.playlistSongNames[m.editIndex]
+			// Remove from playlistSongNames and rebuild existingEntries
+			entries, _ := LoadPlaylistEntries(m.selectedPlaylist.Path)
+			if m.editIndex < len(entries) {
+				entries = append(entries[:m.editIndex], entries[m.editIndex+1:]...)
+			}
+			if err := WritePlaylist(m.selectedPlaylist.Path, entries); err != nil {
+				m.err = err
+				return m, tea.Quit
+			}
+			// Reload state from disk
+			m.existingEntries = make(map[string]bool)
+			for _, e := range entries {
+				m.existingEntries[NormalizePath(e)] = true
+			}
+			m.playlistSongNames = m.buildPlaylistDisplayNames(entries)
+			m.filterSongs()
+			m.confirmEditDel = false
+			m.message = fmt.Sprintf("Removed \"%s\"", name)
+			if len(m.playlistSongNames) == 0 {
+				m.editMode = false
+			} else if m.editIndex >= len(m.playlistSongNames) {
+				m.editIndex = len(m.playlistSongNames) - 1
+			}
+			return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+				return toastDismissMsg{}
+			})
+		case key.Matches(msg, keys.No), msg.Type == tea.KeyEsc:
+			m.confirmEditDel = false
+			return m, nil
+		}
+		return m, nil
+	}
+
+	switch msg.Type {
+	case tea.KeyCtrlC:
+		return m, tea.Quit
+	case tea.KeyUp:
+		if m.editIndex > 0 {
+			m.editIndex--
+		}
+		return m, nil
+	case tea.KeyDown:
+		if m.editIndex < len(m.playlistSongNames)-1 {
+			m.editIndex++
+		}
+		return m, nil
+	case tea.KeyRunes:
+		if msg.String() == "d" && len(m.playlistSongNames) > 0 {
+			m.confirmEditDel = true
+		}
+		return m, nil
+	case tea.KeyEsc:
+		m.editMode = false
+		m.confirmEditDel = false
+		return m, nil
+	}
+	return m, nil
 }
 
 func (m Model) viewPodcastAdding() string {

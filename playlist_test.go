@@ -454,6 +454,68 @@ func TestUpdateRecentlyAdded_NFDNormalized(t *testing.T) {
 	}
 }
 
+func TestWritePlaylist(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.m3u8")
+
+	entries := []string{
+		"../Music/Artist/Album/song1.flac",
+		"../Music/Björk/Homogenic/03 - Jóga.flac",
+		"../Music/坂本龍一/千のナイフ/01 - 千のナイフ.flac",
+	}
+	err := WritePlaylist(path, entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := LoadPlaylistEntries(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != len(entries) {
+		t.Fatalf("got %d entries, want %d", len(loaded), len(entries))
+	}
+	for i, want := range entries {
+		if loaded[i] != want {
+			t.Errorf("entry %d: got %q, want %q", i, loaded[i], want)
+		}
+	}
+
+	// Overwrite with fewer entries
+	fewer := []string{"../Music/Artist/Album/song1.flac"}
+	err = WritePlaylist(path, fewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, _ = LoadPlaylistEntries(path)
+	if len(loaded) != 1 {
+		t.Fatalf("after overwrite: got %d entries, want 1", len(loaded))
+	}
+}
+
+func TestWritePlaylist_NFDNormalized(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.m3u8")
+
+	// NFD decomposed
+	nfdPath := "../Music/Mu\u0301m/Album/track.flac"
+	err := WritePlaylist(path, []string{nfdPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, _ := LoadPlaylistEntries(path)
+	if len(loaded) != 1 {
+		t.Fatalf("got %d entries, want 1", len(loaded))
+	}
+	if !norm.NFC.IsNormalString(loaded[0]) {
+		t.Errorf("entry is not NFC normalized: %q", loaded[0])
+	}
+	if loaded[0] != "../Music/Múm/Album/track.flac" {
+		t.Errorf("got %q, want NFC form", loaded[0])
+	}
+}
+
 func TestAppendToPlaylist(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.m3u8")

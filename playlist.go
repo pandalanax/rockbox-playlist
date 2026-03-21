@@ -98,6 +98,23 @@ func AppendToPlaylist(playlistPath string, entries []string) error {
 	return nil
 }
 
+// WritePlaylist overwrites the playlist file with the given entries,
+// applying NFC normalization to each entry.
+func WritePlaylist(playlistPath string, entries []string) error {
+	f, err := os.Create(playlistPath)
+	if err != nil {
+		return fmt.Errorf("could not write playlist %q: %w", filepath.Base(playlistPath), err)
+	}
+	defer f.Close()
+
+	for _, entry := range entries {
+		if _, err := f.WriteString(norm.NFC.String(entry) + "\n"); err != nil {
+			return fmt.Errorf("failed writing to playlist: %w", err)
+		}
+	}
+	return nil
+}
+
 // UpdateRecentlyAdded appends newEntries to the playlist at playlistPath,
 // trimming oldest entries (from the front) if the total exceeds maxEntries.
 func UpdateRecentlyAdded(playlistPath string, newEntries []string, maxEntries int) error {
@@ -111,18 +128,7 @@ func UpdateRecentlyAdded(playlistPath string, newEntries []string, maxEntries in
 		combined = combined[len(combined)-maxEntries:]
 	}
 
-	f, err := os.Create(playlistPath)
-	if err != nil {
-		return fmt.Errorf("could not write playlist %q: %w", filepath.Base(playlistPath), err)
-	}
-	defer f.Close()
-
-	for _, entry := range combined {
-		if _, err := f.WriteString(norm.NFC.String(entry) + "\n"); err != nil {
-			return fmt.Errorf("failed writing to playlist: %w", err)
-		}
-	}
-	return nil
+	return WritePlaylist(playlistPath, combined)
 }
 
 // NormalizePath normalizes a path for comparison (removes ../ prefix variations)
