@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] - 2026-04-20
+
+### Added
+- `autosync-skip on|off|status` subcommand for manually suppressing mount-triggered autosync when you want an interactive session instead
+- Shared runtime state under `~/.local/state/rockbox-playlist/` for session markers, autosync skip markers, and autosync status
+
+### Changed
+- Autosync now waits briefly before starting so an SSH session can claim the player first
+- Interactive-session skip paths now leave the player mounted and turn the LED off instead of keeping the headless indicator active
+
+### Fixed
+- Autosync session detection now works with `rockbox-playlist.service` running under `PrivateTmp=true`
+- If an SSH session appears while autosync is already running, the sync can finish without unmounting the player out from under the interactive user
+- Removed the separate mount-bound LED behavior in favor of autosync-owned LED state transitions
+
 ## [0.8.0] - 2026-04-20
 
 ### Added

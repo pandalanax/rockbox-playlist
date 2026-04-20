@@ -32,8 +32,26 @@ type autosyncStatus struct {
 	PodcastDeleted     int       `json:"podcasts_deleted"`
 }
 
+func autosyncSkipReason() string {
+	switch {
+	case sessionActive():
+		return "interactive session active"
+	case autosyncSkipEnabled():
+		return "manual autosync skip enabled"
+	default:
+		return ""
+	}
+}
+
+func autosyncMountHoldReason() string {
+	if sessionActive() {
+		return "interactive session active; leaving device mounted"
+	}
+	return ""
+}
+
 func DefaultAutosyncStatusPath() string {
-	return filepath.Join(os.TempDir(), "rockbox-playlist-autosync-status.json")
+	return filepath.Join(runtimeStateDir(), "autosync-status.json")
 }
 
 func writeAutosyncStatus(path string, status autosyncStatus) error {
@@ -254,6 +272,15 @@ func RunAutosync(cfg AppConfig, devicePath, syncSource, statusPath string, logf 
 			return fail("starting", fmt.Errorf("required device directory missing: %s", dir))
 		}
 	}
+	if reason := autosyncSkipReason(); reason != "" {
+		logPhase(logf, "led", "setting off")
+		if err := SetLEDOff(); err != nil {
+			return fail("led", fmt.Errorf("setting LED off: %w", err))
+		}
+		updateStatus("skipped", "skipped", reason)
+		logPhase(logf, "skip", reason)
+		return summary, nil
+	}
 
 	updateStatus("preflight", "running", "device mounted, preparing sync")
 	logPhase(logf, "led", "setting blink")
@@ -298,6 +325,22 @@ func RunAutosync(cfg AppConfig, devicePath, syncSource, statusPath string, logf 
 	}
 	summary.PodcastDownloaded = downloaded
 	summary.PodcastDeleted = deleted
+
+	if reason := autosyncMountHoldReason(); reason != "" {
+		logPhase(logf, "led", "setting off")
+		if err := SetLEDOff(); err != nil {
+			return fail("led", fmt.Errorf("setting LED off: %w", err))
+		}
+		updateStatus("done", "done", reason)
+		logPhase(logf, "skip", reason)
+		logPhase(logf, "done", "complete without unmount: synced=%d recently_added=%d podcasts_downloaded=%d podcasts_deleted=%d",
+			summary.SyncCount,
+			summary.RecentlyAddedCount,
+			summary.PodcastDownloaded,
+			summary.PodcastDeleted,
+		)
+		return summary, nil
+	}
 
 	updateStatus("unmount", "running", "unmounting device")
 	logPhase(logf, "unmount", "unmounting %s", devicePath)

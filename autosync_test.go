@@ -108,3 +108,54 @@ func TestWriteAutosyncStatus(t *testing.T) {
 		t.Fatalf("status = %+v, want %+v", got, want)
 	}
 }
+
+func TestRunAutosyncSkipsWhenSessionActive(t *testing.T) {
+	deviceRoot := createDeviceDir(t)
+	sourceRoot := createMusicDir(t, "Artist/Album/01 - Song.flac")
+	statusPath := filepath.Join(t.TempDir(), "status.json")
+
+	ledRoot := t.TempDir()
+	ledDir := filepath.Join(ledRoot, stateLEDName)
+	if err := os.MkdirAll(ledDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"trigger", "brightness", "delay_on", "delay_off"} {
+		if err := os.WriteFile(filepath.Join(ledDir, name), nil, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	prevLEDBase := ledBasePath
+	ledBasePath = ledRoot
+	defer func() { ledBasePath = prevLEDBase }()
+
+	_ = clearSessionActive()
+	defer func() { _ = clearSessionActive() }()
+	if err := markSessionActive(); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := DefaultConfig()
+	summary, err := RunAutosync(cfg, deviceRoot, sourceRoot, statusPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.SyncCount != 0 || summary.PodcastDownloaded != 0 {
+		t.Fatalf("unexpected summary: %+v", summary)
+	}
+
+	data, err := os.ReadFile(statusPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var status autosyncStatus
+	if err := json.Unmarshal(data, &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.State != "skipped" || status.Phase != "skipped" {
+		t.Fatalf("status = %+v, want skipped/skipped", status)
+	}
+	if status.Message != "interactive session active" {
+		t.Fatalf("message = %q, want interactive session active", status.Message)
+	}
+}

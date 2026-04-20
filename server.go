@@ -42,6 +42,10 @@ func (g *sessionGuard) acquire() bool {
 	if g.active {
 		return false
 	}
+	if err := markSessionActive(); err != nil {
+		log.Error("Could not mark session active", "error", err)
+		return false
+	}
 	g.active = true
 	return true
 }
@@ -50,6 +54,9 @@ func (g *sessionGuard) release() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.active = false
+	if err := clearSessionActive(); err != nil {
+		log.Error("Could not clear session marker", "error", err)
+	}
 }
 
 var guard = &sessionGuard{}

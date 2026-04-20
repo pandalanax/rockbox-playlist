@@ -2117,6 +2117,32 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "autosync-skip" {
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "Usage: rockbox-playlist autosync-skip <on|off|status>")
+			os.Exit(1)
+		}
+		switch os.Args[2] {
+		case "on":
+			if err := enableAutosyncSkip(); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			fmt.Println(autosyncSkipStatus())
+		case "off":
+			if err := disableAutosyncSkip(); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			fmt.Println(autosyncSkipStatus())
+		case "status":
+			fmt.Println(autosyncSkipStatus())
+		default:
+			fmt.Fprintf(os.Stderr, "Unknown autosync-skip mode: %s\n", os.Args[2])
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "autosync" {
 		cfg := LoadConfig()
 		fs := flag.NewFlagSet("autosync", flag.ExitOnError)
