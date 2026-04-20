@@ -180,27 +180,27 @@ func (i songItem) FilterValue() string { return i.song.DisplayName() }
 
 // Model is the main application state
 type Model struct {
-	appConfig        AppConfig
-	screen           screen
-	playlistDir      string
-	musicDir         string
-	playlists        []Playlist
-	songs            []Song
-	songsLoaded      bool
-	playlistsLoaded  bool
-	selectedPlaylist *Playlist
-	selectedSongs    map[string]bool
-	selectedOrder    []string // Song paths in selection order
-	playlistList     list.Model
-	songList         list.Model
-	searchInput      textinput.Model
-	filteredIndices  []int // Indices into songList.Items() that match search
-	existingEntries    map[string]bool
+	appConfig         AppConfig
+	screen            screen
+	playlistDir       string
+	musicDir          string
+	playlists         []Playlist
+	songs             []Song
+	songsLoaded       bool
+	playlistsLoaded   bool
+	selectedPlaylist  *Playlist
+	selectedSongs     map[string]bool
+	selectedOrder     []string // Song paths in selection order
+	playlistList      list.Model
+	songList          list.Model
+	searchInput       textinput.Model
+	filteredIndices   []int // Indices into songList.Items() that match search
+	existingEntries   map[string]bool
 	playlistSongNames []string // Display names of songs already in the playlist
-	width            int
-	height           int
-	err              error
-	message          string
+	width             int
+	height            int
+	err               error
+	message           string
 
 	// Device fields
 	deviceConnected bool
@@ -245,9 +245,9 @@ type Model struct {
 	podcastConfirmRemove bool
 
 	// Playlist edit mode (right panel of song browser)
-	editMode       bool   // Whether right panel is in edit mode
-	editIndex      int    // Cursor position in right panel
-	confirmEditDel bool   // Deletion confirmation overlay active
+	editMode       bool // Whether right panel is in edit mode
+	editIndex      int  // Cursor position in right panel
+	confirmEditDel bool // Deletion confirmation overlay active
 }
 
 // Messages
@@ -2082,6 +2082,71 @@ func main() {
 		runDoctor(
 			filepath.Join(devicePath, cfg.Device.PlaylistDir),
 			filepath.Join(devicePath, cfg.Device.MusicDir),
+		)
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "led" {
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "Usage: rockbox-playlist led <on|off|blink|heartbeat>")
+			os.Exit(1)
+		}
+		var err error
+		switch os.Args[2] {
+		case "on":
+			err = SetLEDOn()
+		case "off":
+			err = SetLEDOff()
+		case "blink":
+			err = SetLEDBlink(300 * time.Millisecond)
+		case "heartbeat":
+			err = SetLEDHeartbeat()
+		default:
+			fmt.Fprintf(os.Stderr, "Unknown LED mode: %s\n", os.Args[2])
+			os.Exit(1)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "led-sos" {
+		if err := BlinkSOSForever(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "autosync" {
+		cfg := LoadConfig()
+		fs := flag.NewFlagSet("autosync", flag.ExitOnError)
+		devicePath := fs.String("device-path", cfg.Device.Path, "Path to Rockbox device")
+		syncSource := fs.String("sync-source", cfg.Sync.Source, "Source directory for music sync")
+		lockPath := fs.String("lock-file", filepath.Join(os.TempDir(), "rockbox-playlist-autosync.lock"), "Lock file path")
+		statusPath := fs.String("status-file", DefaultAutosyncStatusPath(), "Autosync status file path")
+		fs.Parse(os.Args[2:])
+
+		unlock, err := AcquireLock(*lockPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		defer unlock()
+
+		summary, err := RunAutosync(cfg, *devicePath, *syncSource, *statusPath, func(format string, args ...any) {
+			fmt.Fprintf(os.Stderr, format+"\n", args...)
+		})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+
+		fmt.Printf(
+			"Autosync complete: synced=%d recently_added=%d podcasts_downloaded=%d podcasts_deleted=%d\n",
+			summary.SyncCount,
+			summary.RecentlyAddedCount,
+			summary.PodcastDownloaded,
+			summary.PodcastDeleted,
 		)
 		return
 	}

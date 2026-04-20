@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-04-20
+
+### Added
+- `autosync` subcommand: non-interactive player sync that reuses the app's existing music sync, Recently Added, podcast refresh, and eject logic
+- LED control subcommands for the ROCK 2F `state-led`: `led on`, `led off`, `led blink`, `led heartbeat`, and `led-sos`
+- Autosync status file with last-run state, phase, timestamps, counters, and error details for troubleshooting
+- Tests covering autosync helpers, LED controls, and status file writes
+
+### Changed
+- Extracted shared sync helpers so the TUI and autosync path use the same `rsync` behavior
+- Autosync journal output is now phase-prefixed (`[sync]`, `[recent]`, `[podcast]`, `[unmount]`, `[led]`) for easier debugging
+- Updated ROCK 2F setup docs with mount-triggered autosync and LED failure signaling
+
+### Fixed
+- Headless sync now preserves the same Recently Added filtering and trimming behavior as the interactive app
+- Headless podcast refresh now follows the same check/execute flow as the interactive app
+- Linux autosync unmount now uses the existing block-device-aware eject path instead of ad-hoc shell logic
+
 ## [0.7.5] - 2026-03-21
 
 ### Fixed
