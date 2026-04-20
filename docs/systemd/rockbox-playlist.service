@@ -1,0 +1,40 @@
+[Unit]
+Description=Rockbox Playlist Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+User=pandalanax
+Group=pandalanax
+
+ExecStart=/usr/local/bin/rockbox-playlist --serve
+ExecReload=/bin/kill -HUP $MAINPID
+
+WorkingDirectory=/home/pandalanax
+
+Restart=on-failure
+RestartSec=3
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=TERM=xterm-256color
+Environment=COLORTERM=truecolor
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rockbox-playlist
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+LimitNOFILE=4096
+
+TimeoutStopSec=20
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

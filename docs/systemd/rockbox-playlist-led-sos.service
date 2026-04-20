@@ -1,0 +1,8 @@
+[Unit]
+Description=Rockbox autosync LED SOS failure indicator
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=1
+ExecStart=/usr/local/bin/rockbox-playlist led-sos

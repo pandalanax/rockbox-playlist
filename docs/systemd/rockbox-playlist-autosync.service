@@ -1,0 +1,16 @@
+[Unit]
+Description=Rockbox autosync when player is mounted
+Requires=media-pandalanax-4B03\x2d0C07.mount
+After=media-pandalanax-4B03\x2d0C07.mount network-online.target
+OnFailure=rockbox-playlist-led-sos.service
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/pandalanax
+Environment=XDG_CONFIG_HOME=/home/pandalanax/.config
+ExecStartPre=/bin/sh -c 'systemctl stop rockbox-playlist-led-sos.service || true'
+ExecStartPre=/bin/sleep 5
+ExecStart=/usr/local/bin/rockbox-playlist autosync
+
+[Install]
+WantedBy=media-pandalanax-4B03\x2d0C07.mount
